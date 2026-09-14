@@ -205,9 +205,8 @@ async function main(): Promise<number> {
 
     case "console": {
       const { readFileSync, existsSync } = await import("node:fs");
-      const tokenFile = join(runtimeDir(dir), "run", "console.token");
-      const legacy = join(runtimeDir(dir), "console.token");
-      const file = existsSync(tokenFile) ? tokenFile : legacy;
+      // runtimeDir() is already <configDir>/run — the daemon writes the token there.
+      const file = join(runtimeDir(dir), "console.token");
       if (!existsSync(file)) {
         console.error("No console token yet. Start the daemon first: browser-personas start");
         return 1;
