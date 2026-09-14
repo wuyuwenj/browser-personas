@@ -1,0 +1,583 @@
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
+import { WebSocketServer, type WebSocket } from "ws";
+import type { LaunchedChrome } from "../chrome/launch.js";
+import { launchChrome } from "../chrome/launch.js";
+import type { PipeTransport } from "../cdp/pipeTransport.js";
+import { OwnershipRegistry, type OwnerId, type OwnershipOptions } from "./ownership.js";
+import {
+  CDP_SERVER_ERROR,
+  decideInbound,
+  decideOutbound,
+  filterTargetInfos,
+  type CdpCommand,
+} from "./router.js";
+
+export const DEFAULT_PERSONA = "default";
+
+export type DaemonOptions = {
+  port: number;
+  host: string;
+  userDataDir: string;
+  chromePath?: string;
+  headless?: boolean;
+  ownership?: Partial<OwnershipOptions>;
+  /** Injected in tests so reaping can be driven without waiting on wall-clock time. */
+  now?: () => number;
+  sweepIntervalMs?: number;
+};
+
+type ClientConn = {
+  id: string;
+  ownerId: OwnerId;
+  persona: string;
+  ws: WebSocket;
+  /** Clients that asked Chrome to pause new targets until they say go. */
+  waitsForDebugger: boolean;
+};
+
+type Inflight = {
+  ownerId: OwnerId;
+  connId: string;
+  clientId: number;
+  method: string;
+  params: Record<string, unknown>;
+};
+
+export class BrowserPersonasDaemon {
+  readonly registry: OwnershipRegistry;
+  readonly options: DaemonOptions;
+  #http: Server;
+  #wss: WebSocketServer;
+  #chrome: LaunchedChrome | null = null;
+  #transport: PipeTransport | null = null;
+  #clients = new Map<string, ClientConn>();
+  #inflight = new Map<number, Inflight>();
+  /** Proxy-originated calls (discovery, unblocking) that no client should ever see. */
+  #internal = new Map<number, (result: Record<string, unknown>) => void>();
+  #nextUpstreamId = 1;
+  /**
+   * Only one `Target.createTarget` is ever in flight across all owners.
+   *
+   * Chrome 152 answers createTarget with the PAGE target's id, but first announces a
+   * separate "tab" target that wraps it — a different id, with no field linking the two.
+   * The only way to attribute that tab is the window it appeared in, and the window is
+   * only unambiguous if one agent is creating at a time. Creating a tab is a few
+   * milliseconds, so serialising it costs nothing and removes the guesswork entirely.
+   */
+  #creatingOwner: OwnerId | null = null;
+  #createQueue: (() => void)[] = [];
+  #createTimer: NodeJS.Timeout | null = null;
+  #sweep: NodeJS.Timeout | null = null;
+  #now: () => number;
+  #started = false;
+
+  constructor(options: DaemonOptions) {
+    this.options = options;
+    this.#now = options.now ?? (() => Date.now());
+    this.registry = new OwnershipRegistry(options.ownership);
+    this.#http = createServer((req, res) => void this.#onHttp(req, res));
+    this.#wss = new WebSocketServer({ noServer: true });
+    this.#http.on("upgrade", (req, socket, head) => {
+      this.#wss.handleUpgrade(req, socket as never, head, (ws) => this.#onClient(ws, req));
+    });
+  }
+
+  get port(): number {
+    const addr = this.#http.address();
+    return typeof addr === "object" && addr ? addr.port : this.options.port;
+  }
+
+  async start(): Promise<void> {
+    if (this.#started) return;
+    this.#started = true;
+    this.#chrome = launchChrome({
+      chromePath: this.options.chromePath,
+      headless: this.options.headless,
+      userDataDir: this.options.userDataDir,
+    });
+    this.#transport = this.#chrome.transport;
+    this.#transport.on("message", (msg: Record<string, unknown>) => this.#onUpstream(msg));
+    this.#transport.on("close", () => this.#onChromeGone());
+
+    // The proxy keeps its own view of every target, independent of what any client asks
+    // for. Without this a human's pre-existing tabs would be invisible to the registry
+    // and the first agent to connect would inherit them.
+    await this.#callUpstream("Target.setDiscoverTargets", { discover: true });
+
+    await new Promise<void>((resolve) => {
+      this.#http.listen(this.options.port, this.options.host, resolve);
+    });
+
+    const interval = this.options.sweepIntervalMs ?? 5_000;
+    if (interval > 0) {
+      this.#sweep = setInterval(() => this.sweep(), interval);
+      this.#sweep.unref();
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.#sweep) clearInterval(this.#sweep);
+    for (const client of this.#clients.values()) client.ws.close(1001, "daemon stopping");
+    this.#clients.clear();
+    await new Promise<void>((resolve) => this.#wss.close(() => resolve()));
+    await new Promise<void>((resolve) => this.#http.close(() => resolve()));
+    this.#chrome?.kill();
+    await this.#chrome?.exited();
+    this.#started = false;
+  }
+
+  // ---- upstream -----------------------------------------------------------
+
+  #callUpstream(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    return new Promise((resolve) => {
+      const id = this.#nextUpstreamId++;
+      this.#internal.set(id, resolve);
+      this.#transport?.send({ id, method, params });
+    });
+  }
+
+  #sendUpstreamOnSession(method: string, sessionId: string, params: Record<string, unknown> = {}): void {
+    const id = this.#nextUpstreamId++;
+    this.#internal.set(id, () => {});
+    this.#transport?.send({ id, method, params, sessionId });
+  }
+
+  #onUpstream(msg: Record<string, unknown>): void {
+    const now = this.#now();
+    if (process.env["BP_TRACE"]) console.error("  chrome→", JSON.stringify(msg).slice(0, 220));
+    this.#expireClaims(now);
+    const id = typeof msg["id"] === "number" ? (msg["id"] as number) : null;
+
+    if (id !== null) {
+      const internal = this.#internal.get(id);
+      if (internal) {
+        this.#internal.delete(id);
+        internal((msg["result"] as Record<string, unknown>) ?? {});
+        return;
+      }
+      const pending = this.#inflight.get(id);
+      if (!pending) return;
+      this.#inflight.delete(id);
+      this.#completeResponse(pending, msg, now);
+      return;
+    }
+
+    this.#routeEvent(msg, now);
+  }
+
+  #completeResponse(pending: Inflight, msg: Record<string, unknown>, now: number): void {
+    const client = this.#clients.get(pending.connId);
+    const result = (msg["result"] as Record<string, unknown>) ?? null;
+
+    if (pending.method === "Target.createTarget") {
+      const targetId = result?.["targetId"];
+      if (typeof targetId === "string") {
+        this.registry.claim(targetId, pending.ownerId, now);
+        // Chrome announced this tab before it told the creator its id. Those held frames
+        // are the creator's alone; release them now, ahead of the response, which is the
+        // order a client talking straight to Chrome would have seen.
+        for (const held of this.registry.releaseHeld(targetId)) {
+          this.#deliver(pending.ownerId, held);
+        }
+      }
+      this.#endCreate();
+    }
+
+    if (result && pending.method === "Target.getTargets" && Array.isArray(result["targetInfos"])) {
+      result["targetInfos"] = filterTargetInfos(
+        this.registry,
+        pending.ownerId,
+        result["targetInfos"] as unknown[],
+      );
+    }
+
+    if (result && pending.method === "Target.attachToTarget") {
+      const sessionId = result["sessionId"];
+      const targetId = pending.params["targetId"];
+      if (typeof sessionId === "string" && typeof targetId === "string") {
+        this.registry.bindSession(pending.ownerId, sessionId, targetId);
+      }
+    }
+
+    if (!client) return;
+    const out: Record<string, unknown> = { id: pending.clientId };
+    if (msg["error"] !== undefined) out["error"] = msg["error"];
+    else out["result"] = result ?? {};
+    if (msg["sessionId"] !== undefined) out["sessionId"] = msg["sessionId"];
+    this.#sendTo(client, out);
+  }
+
+  /**
+   * Held frames whose claim window closed belonged to a human. Drop them — but first
+   * release any renderer they left paused, or that tab is frozen for the browser's life.
+   */
+  #expireClaims(now: number): void {
+    for (const targetId of this.registry.expireClaims(now)) {
+      for (const held of this.registry.releaseHeld(targetId)) {
+        const params = (held["params"] as Record<string, unknown>) ?? {};
+        if (held["method"] === "Target.attachedToTarget" && params["waitingForDebugger"] === true) {
+          const sessionId = params["sessionId"];
+          if (typeof sessionId === "string") {
+            this.#sendUpstreamOnSession("Runtime.runIfWaitingForDebugger", sessionId);
+          }
+        }
+      }
+    }
+  }
+
+  #startCreate(ownerId: OwnerId, send: () => void): void {
+    const begin = (): void => {
+      this.#creatingOwner = ownerId;
+      if (this.#createTimer) clearTimeout(this.#createTimer);
+      // A create that never answers must not wedge every other agent's tabs.
+      this.#createTimer = setTimeout(() => this.#endCreate(), 10_000);
+      this.#createTimer.unref?.();
+      send();
+    };
+    if (this.#creatingOwner === null) begin();
+    else this.#createQueue.push(begin);
+  }
+
+  #endCreate(): void {
+    if (this.#createTimer) {
+      clearTimeout(this.#createTimer);
+      this.#createTimer = null;
+    }
+    this.#creatingOwner = null;
+    const next = this.#createQueue.shift();
+    if (next) next();
+  }
+
+  #routeEvent(msg: Record<string, unknown>, now: number): void {
+    const method = String(msg["method"] ?? "");
+    const params = (msg["params"] as Record<string, unknown>) ?? {};
+
+    // Keep the registry's view current before deciding anything.
+    if (method === "Target.targetCreated" || method === "Target.targetInfoChanged") {
+      const info = params["targetInfo"] as Record<string, unknown> | undefined;
+      if (info && typeof info["targetId"] === "string") {
+        const targetId = info["targetId"] as string;
+        const type = String(info["type"] ?? "other");
+        const record = this.registry.noteTarget(
+          {
+            targetId,
+            type,
+            url: String(info["url"] ?? ""),
+            browserContextId:
+              typeof info["browserContextId"] === "string" ? (info["browserContextId"] as string) : undefined,
+            openerId: typeof info["openerId"] === "string" ? (info["openerId"] as string) : undefined,
+          },
+          now,
+        );
+        // The tab wrapper Chrome makes for a page an agent asked for. It appears inside
+        // that agent's create window and carries no link back to the page id, so the
+        // window is what attributes it.
+        if (
+          method === "Target.targetCreated" &&
+          record.ownerId === null &&
+          this.#creatingOwner !== null &&
+          (type === "tab" || type === "page")
+        ) {
+          this.registry.claim(targetId, this.#creatingOwner, now);
+          for (const held of this.registry.releaseHeld(targetId)) {
+            this.#deliver(this.#creatingOwner, held);
+          }
+        }
+      }
+    }
+
+    const parentSession = typeof msg["sessionId"] === "string" ? (msg["sessionId"] as string) : undefined;
+
+    // Sessions are wired up BEFORE the routing decision, because the decision reads them.
+    // Chrome attaches to a new tab before the creating client's response claims it, so a
+    // session bound only at delivery time would never be bound at all, and every later
+    // frame on that session would be dropped as an orphan.
+    if (method === "Target.attachedToTarget") {
+      const info = params["targetInfo"] as Record<string, unknown> | undefined;
+      const newSession = params["sessionId"];
+      const targetId = info && typeof info["targetId"] === "string" ? (info["targetId"] as string) : null;
+      if (targetId && typeof newSession === "string") {
+        this.registry.noteSession(newSession, targetId);
+        // A nested attach (an out-of-process iframe, a worker) arrives on the page's own
+        // session. Those targets belong to whoever owns the page — without this they stay
+        // unowned and the page's own frames get dropped.
+        if (parentSession) {
+          const parentOwner = this.registry.ownerOfSession(parentSession);
+          if (parentOwner && this.registry.target(targetId)?.ownerId == null) {
+            this.registry.claim(targetId, parentOwner, now);
+          }
+        }
+      }
+    }
+
+    const decision = decideOutbound(this.registry, {
+      method,
+      params,
+      sessionId: parentSession,
+    });
+
+    if (method === "Target.attachedToTarget") {
+      const newSession = params["sessionId"];
+      // A renderer paused on `waitForDebuggerOnStart` that nobody is listening for would
+      // hang forever, so the proxy releases it itself when the event reaches no owner.
+      if (params["waitingForDebugger"] === true && decision.kind === "drop" && typeof newSession === "string") {
+        this.#sendUpstreamOnSession("Runtime.runIfWaitingForDebugger", newSession);
+      }
+    }
+
+    if (method === "Target.detachedFromTarget") {
+      const sessionId = params["sessionId"];
+      if (typeof sessionId === "string") {
+        const owner = this.registry.ownerOfSession(sessionId);
+        if (owner) this.registry.unbindSession(owner, sessionId);
+      }
+    }
+
+    switch (decision.kind) {
+      case "deliver":
+        this.#deliver(decision.to, msg);
+        break;
+      case "broadcast":
+        for (const client of this.#clients.values()) this.#sendTo(client, msg);
+        break;
+      case "hold":
+        this.registry.hold(decision.targetId, msg, now);
+        break;
+      case "drop":
+        break;
+    }
+
+    if (method === "Target.targetDestroyed" && typeof params["targetId"] === "string") {
+      this.registry.removeTarget(params["targetId"] as string);
+    }
+  }
+
+  #deliver(ownerId: OwnerId, msg: Record<string, unknown>): void {
+    for (const client of this.#clients.values()) {
+      if (client.ownerId === ownerId) this.#sendTo(client, msg);
+    }
+  }
+
+  #sendTo(client: ClientConn, msg: Record<string, unknown>): void {
+    if (process.env["BP_TRACE"]) console.error(`  →${client.ownerId}`, JSON.stringify(msg).slice(0, 220));
+    if (client.ws.readyState === client.ws.OPEN) client.ws.send(JSON.stringify(msg));
+  }
+
+  // ---- downstream ---------------------------------------------------------
+
+  #onClient(ws: WebSocket, req: IncomingMessage): void {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
+    const persona = url.searchParams.get("persona") ?? parsePathPersona(url.pathname) ?? DEFAULT_PERSONA;
+    const ownerId =
+      url.searchParams.get("owner") ?? parsePathOwner(url.pathname) ?? `conn-${randomUUID().slice(0, 8)}`;
+    const connId = randomUUID();
+    const now = this.#now();
+
+    this.registry.connectOwner(ownerId, persona, now);
+    const client: ClientConn = { id: connId, ownerId, persona, ws, waitsForDebugger: false };
+    this.#clients.set(connId, client);
+
+    ws.on("message", (data) => this.#onClientMessage(client, data.toString()));
+    ws.on("close", () => {
+      this.#clients.delete(connId);
+      const stillConnected = [...this.#clients.values()].some((c) => c.ownerId === ownerId);
+      if (!stillConnected) this.registry.disconnectOwner(ownerId, this.#now());
+    });
+    ws.on("error", () => {});
+  }
+
+  #onClientMessage(client: ClientConn, raw: string): void {
+    const now = this.#now();
+    let command: CdpCommand;
+    try {
+      command = JSON.parse(raw) as CdpCommand;
+    } catch {
+      return;
+    }
+    if (typeof command.id !== "number" || typeof command.method !== "string") return;
+
+    if (command.method === "Target.setAutoAttach" && command.params?.["waitForDebuggerOnStart"] === true) {
+      client.waitsForDebugger = true;
+    }
+
+    if (process.env["BP_TRACE"]) console.error(`${client.ownerId} →chrome`, JSON.stringify(command).slice(0, 220));
+    const decision = decideInbound(this.registry, client.ownerId, command, now);
+
+    // A reply to a command sent on a session MUST carry that session id back. Puppeteer
+    // routes responses by session before it looks at the id, so a refusal answered at
+    // browser level lands in the wrong callback map and the caller's promise never
+    // settles — a refusal that reads to the agent as a hang rather than as a "no".
+    const echo = (body: Record<string, unknown>): void => {
+      const reply: Record<string, unknown> = { id: command.id, ...body };
+      if (command.sessionId) reply["sessionId"] = command.sessionId;
+      this.#sendTo(client, reply);
+    };
+
+    if (decision.kind === "refuse") {
+      echo({ error: { code: decision.code, message: decision.message } });
+      return;
+    }
+    if (decision.kind === "respond") {
+      echo({ result: decision.result });
+      return;
+    }
+
+    const upstreamId = this.#nextUpstreamId++;
+    this.#inflight.set(upstreamId, {
+      ownerId: client.ownerId,
+      connId: client.id,
+      clientId: command.id,
+      method: command.method,
+      params: decision.message.params ?? {},
+    });
+    const out: Record<string, unknown> = {
+      id: upstreamId,
+      method: decision.message.method,
+      params: decision.message.params ?? {},
+    };
+    if (decision.message.sessionId) out["sessionId"] = decision.message.sessionId;
+
+    if (command.method === "Target.createTarget") {
+      this.#startCreate(client.ownerId, () => this.#transport?.send(out));
+      return;
+    }
+    this.#transport?.send(out);
+  }
+
+  // ---- http ---------------------------------------------------------------
+
+  async #onHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
+    const persona = parsePathPersona(url.pathname) ?? DEFAULT_PERSONA;
+    const owner = parsePathOwner(url.pathname);
+    const endpoint = stripPrefixes(url.pathname);
+
+    const json = (body: unknown, status = 200): void => {
+      const payload = JSON.stringify(body);
+      res.writeHead(status, { "content-type": "application/json; charset=UTF-8" });
+      res.end(payload);
+    };
+
+    if (endpoint === "/json/version" || endpoint === "/json/version/") {
+      const version = await this.#callUpstream("Browser.getVersion");
+      const query = new URLSearchParams({ persona });
+      if (owner) query.set("owner", owner);
+      json({
+        Browser: version["product"] ?? "Chrome",
+        "Protocol-Version": version["protocolVersion"] ?? "1.3",
+        "User-Agent": version["userAgent"] ?? "",
+        "V8-Version": version["jsVersion"] ?? "",
+        "WebKit-Version": version["revision"] ?? "",
+        webSocketDebuggerUrl: `ws://${this.options.host}:${this.port}/devtools/browser/${randomUUID()}?${query}`,
+      });
+      return;
+    }
+
+    if (endpoint === "/json" || endpoint === "/json/list") {
+      // HTTP carries no connection identity, so it is scoped by persona, not by owner —
+      // a weaker boundary than the WebSocket path, and documented as such.
+      const rows = this.registry
+        .targets()
+        .filter((t) => t.type === "page" && t.ownerId !== null)
+        .filter((t) => this.registry.owner(t.ownerId!)?.persona === persona)
+        .map((t) => ({
+          id: t.targetId,
+          type: t.type,
+          url: t.url,
+          title: t.url,
+          webSocketDebuggerUrl: `ws://${this.options.host}:${this.port}/devtools/page/${t.targetId}`,
+        }));
+      json(rows);
+      return;
+    }
+
+    if (endpoint === "/health") {
+      json({ ok: true, chrome: this.#chrome?.process.exitCode === null, port: this.port });
+      return;
+    }
+
+    if (endpoint === "/status" || endpoint === "/") {
+      json({
+        port: this.port,
+        personas: [...new Set(this.registry.owners().map((o) => o.persona))],
+        owners: this.registry.owners().map((o) => ({
+          id: o.id,
+          persona: o.persona,
+          connected: o.connected,
+          tabs: this.registry.targetsOf(o.id).map((t) => ({ id: t.targetId, url: t.url })),
+        })),
+      });
+      return;
+    }
+
+    json({ error: `unknown endpoint ${endpoint}` }, 404);
+  }
+
+  // ---- housekeeping -------------------------------------------------------
+
+  /** One pass of the claim window, grace window and idle reaping. Called on a timer. */
+  sweep(): void {
+    const now = this.#now();
+
+    for (const targetId of this.registry.expireClaims(now)) {
+      // Held frames for a tab nobody claimed belong to a human. Drop them, and make sure
+      // a paused renderer is not left waiting on an agent that will never speak.
+      this.registry.releaseHeld(targetId);
+    }
+
+    for (const { ownerId, targetIds } of this.registry.expiredGraceTargets(now)) {
+      for (const targetId of targetIds) {
+        void this.#callUpstream("Target.closeTarget", { targetId });
+        this.registry.removeTarget(targetId);
+      }
+      this.registry.forgetOwner(ownerId);
+    }
+
+    for (const targetId of this.registry.idleTargets(now)) {
+      void this.#callUpstream("Target.closeTarget", { targetId });
+      this.registry.removeTarget(targetId);
+    }
+
+    for (const ownerId of this.registry.forgettableOwners(now)) {
+      const owner = this.registry.owner(ownerId);
+      if (owner?.connected && [...this.#clients.values()].some((c) => c.ownerId === ownerId)) continue;
+      this.registry.forgetOwner(ownerId);
+    }
+  }
+
+  #onChromeGone(): void {
+    for (const client of this.#clients.values()) {
+      this.#sendTo(client, {
+        method: "Inspector.detached",
+        params: { reason: "browser_closed" },
+      });
+      client.ws.close(1011, "chrome exited");
+    }
+    this.#clients.clear();
+  }
+}
+
+// ---- path parsing ---------------------------------------------------------
+
+/** `/p/<persona>/...` picks the persona; anything else uses the shared default. */
+export function parsePathPersona(pathname: string): string | null {
+  const match = /^\/p\/([^/]+)/.exec(pathname);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+/** `/o/<owner>/...` pins a stable owner id so a reconnect reclaims its tabs. */
+export function parsePathOwner(pathname: string): string | null {
+  const match = /(?:^|\/)o\/([^/]+)/.exec(pathname);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+export function stripPrefixes(pathname: string): string {
+  return pathname.replace(/^\/p\/[^/]+/, "").replace(/^\/o\/[^/]+/, "") || "/";
+}
+
+export function createDaemon(options: DaemonOptions): BrowserPersonasDaemon {
+  return new BrowserPersonasDaemon(options);
+}
+
+export { CDP_SERVER_ERROR };

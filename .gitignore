@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+# persona cookie jars and any local state — never commit
+*.enc
+.personas/
+coverage/

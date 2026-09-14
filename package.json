@@ -1,0 +1,59 @@
+{
+  "name": "browser-personas",
+  "version": "0.1.0",
+  "description": "One Chrome, many agents: a CDP proxy that gives every agent its own logged-in identity and its own tabs.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wuyuwenj/browser-personas.git"
+  },
+  "keywords": [
+    "cdp",
+    "chrome-devtools-protocol",
+    "mcp",
+    "chrome-devtools-mcp",
+    "playwright",
+    "puppeteer",
+    "ai-agents",
+    "browser-automation"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "browser-personas": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && tsc --noEmit",
+    "test": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:all": "vitest run",
+    "test:matrix": "node scripts/matrix.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "eslint": "^9.17.0",
+    "puppeteer-core": "^23.10.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "chrome-devtools-mcp": "1.9.0"
+  }
+}

@@ -1,0 +1,478 @@
+<title>One Chrome, Many Agents</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ground: #f5f7fa;
+    --paper: #ffffff;
+    --ink: #1a2230;
+    --ink-2: #4a5566;
+    --ink-3: #7d8797;
+    --rule: #d9dee6;
+    --rule-2: #e9edf2;
+    --accent: #2b6a8c;
+    --accent-ink: #ffffff;
+    --accent-soft: #e3eef5;
+    --decide: #a86a12;
+    --decide-soft: #fbf1e2;
+    --ok: #2f7a4d;
+    --ok-soft: #e4f2e9;
+    --code-bg: #eef1f5;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #11151b;
+      --paper: #171c24;
+      --ink: #e5e9ef;
+      --ink-2: #aeb7c4;
+      --ink-3: #7c8797;
+      --rule: #2b3340;
+      --rule-2: #222933;
+      --accent: #6fb0d2;
+      --accent-ink: #0f1a22;
+      --accent-soft: #1b2b36;
+      --decide: #e0a656;
+      --decide-soft: #2b2416;
+      --ok: #6fc48f;
+      --ok-soft: #16281d;
+      --code-bg: #1d232c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #11151b;
+    --paper: #171c24;
+    --ink: #e5e9ef;
+    --ink-2: #aeb7c4;
+    --ink-3: #7c8797;
+    --rule: #2b3340;
+    --rule-2: #222933;
+    --accent: #6fb0d2;
+    --accent-ink: #0f1a22;
+    --accent-soft: #1b2b36;
+    --decide: #e0a656;
+    --decide-soft: #2b2416;
+    --ok: #6fc48f;
+    --ok-soft: #16281d;
+    --code-bg: #1d232c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 48px 24px 96px; }
+  header.masthead { border-bottom: 1px solid var(--rule); padding-bottom: 28px; margin-bottom: 40px; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+  h1 { font-size: 40px; line-height: 1.1; font-weight: 600; letter-spacing: -.02em; margin: 10px 0 12px; text-wrap: balance; }
+  .lede { font-size: 18px; color: var(--ink-2); max-width: 62ch; margin: 0; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 18px; font-family: var(--mono); font-size: 12.5px; color: var(--ink-3); }
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  section { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 0 32px; padding: 32px 0; border-top: 1px solid var(--rule-2); }
+  section:first-of-type { border-top: 0; }
+  .label { position: sticky; top: 24px; align-self: start; }
+  .label .n { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .label h2 { font-size: 15px; font-weight: 600; margin: 4px 0 0; line-height: 1.3; letter-spacing: -.005em; }
+  .body { min-width: 0; max-width: 70ch; }
+  .body.wide { max-width: none; }
+  .body > p:first-child { margin-top: 0; }
+  p { margin: 0 0 14px; }
+  h3 { font-size: 16px; font-weight: 600; margin: 26px 0 8px; letter-spacing: -.005em; }
+  h3:first-child { margin-top: 0; }
+  ul, ol { padding-left: 22px; margin: 0 0 14px; }
+  li { margin: 0 0 6px; }
+  li::marker { color: var(--ink-3); }
+  code { font-family: var(--mono); font-size: .9em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  pre { font-family: var(--mono); font-size: 13px; line-height: 1.5; background: var(--code-bg); border: 1px solid var(--rule); border-radius: 4px; padding: 14px 16px; overflow-x: auto; margin: 0 0 16px; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .diagram { color: var(--ink-2); }
+  .diagram b { color: var(--ink); font-weight: 500; }
+  .diagram i { color: var(--accent); font-style: normal; }
+
+  .tbl { overflow-x: auto; margin: 0 0 18px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th { text-align: left; font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--rule); vertical-align: bottom; }
+  td { padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule-2); vertical-align: top; }
+  td:first-child, th:first-child { padding-left: 0; }
+  td code { white-space: nowrap; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  .chip { display: inline-block; font-family: var(--mono); font-size: 11.5px; padding: 1px 7px; border-radius: 3px; border: 1px solid var(--rule); color: var(--ink-2); white-space: nowrap; }
+  .chip.filter { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+  .chip.refuse { color: var(--decide); border-color: var(--decide); background: var(--decide-soft); }
+  .chip.rewrite { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+  .chip.pass { color: var(--ink-3); }
+
+  .callout { border-left: 3px solid var(--decide); background: var(--decide-soft); padding: 12px 16px; border-radius: 0 4px 4px 0; margin: 0 0 16px; }
+  .callout .k { font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--decide); display: block; margin-bottom: 4px; }
+  .callout p:last-child { margin-bottom: 0; }
+  .note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 4px 4px 0; margin: 0 0 16px; }
+  .note .k { font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 4px; }
+  .note p:last-child { margin-bottom: 0; }
+
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; font-size: 14.5px; margin: 0 0 16px; }
+  .kv dt { font-family: var(--mono); font-size: 13px; color: var(--ink-3); }
+  .kv dd { margin: 0; }
+
+  .milestones { display: grid; gap: 12px; }
+  .ms { display: grid; grid-template-columns: 64px 1fr; gap: 16px; padding: 14px 16px; background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; }
+  .ms .v { font-family: var(--mono); font-size: 13px; color: var(--accent); }
+  .ms .v small { display: block; color: var(--ink-3); font-size: 11.5px; margin-top: 2px; }
+  .ms h4 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  .ms p { margin: 0; font-size: 14px; color: var(--ink-2); }
+  .ms .exit { margin-top: 8px; font-size: 13px; color: var(--ink-2); }
+  .ms .exit b { font-weight: 500; color: var(--ink); }
+
+  .decisions { display: grid; gap: 10px; }
+  .dec { display: grid; grid-template-columns: 28px 1fr; gap: 12px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 4px; background: var(--paper); }
+  .dec .d { font-family: var(--mono); font-size: 12px; color: var(--decide); padding-top: 2px; }
+  .dec h4 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  .dec p { margin: 0; font-size: 14px; color: var(--ink-2); }
+  .dec p b { color: var(--ink); font-weight: 500; }
+
+  footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--rule); font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+
+  @media (max-width: 720px) {
+    .wrap { padding: 32px 18px 72px; }
+    h1 { font-size: 30px; }
+    section { grid-template-columns: 1fr; gap: 10px; padding: 26px 0; }
+    .label { position: static; }
+    .ms { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+  a { color: var(--accent); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+<header class="masthead">
+  <div class="eyebrow">Design draft · v0 · for discussion</div>
+  <h1>One Chrome, Many Agents</h1>
+  <p class="lede">A CDP proxy that lets any number of coding agents share one Chrome and one profile, each owning its own tabs, each logged in as the persona it chose, with no tool able to see or touch another agent's work.</p>
+  <div class="meta">
+    <span><b>author</b> James Wu, drafted with Claude</span>
+    <span><b>date</b> 2026-09-13</span>
+    <span><b>status</b> pre-code, decisions open in §12</span>
+  </div>
+</header>
+
+<section>
+  <div class="label"><div class="n">§1</div><h2>Goal and non-goals</h2></div>
+  <div class="body">
+    <p><b>Goal.</b> Run N agent sessions against one Chrome process with one on-disk profile. Each session owns 1 to 3 tabs. Sessions cannot list, attach to, navigate, or close each other's tabs. A session picks a named persona and gets that persona's cookies, and the persona's cookies survive Chrome restarts. Existing chrome-devtools-mcp users adopt it with one flag; users of other CDP clients adopt it with one address.</p>
+    <p><b>Why now.</b> Today every session launches a full Chrome. On a 24 GB laptop that hit "out of application memory" at 11 sessions and 38 Chrome processes. The upstream fix, <code>--browserUrl</code>, shares the process but not the tabs, so the only isolation is a prompt rule ("act only on tabs you opened") that agents forget.</p>
+    <h3>Non-goals</h3>
+    <ul>
+      <li>Replacing chrome-devtools-mcp, Playwright MCP, or agent-browser. The proxy sits under all of them.</li>
+      <li>A security boundary against a hostile local process. Isolation is between well-behaved agents, not against malware. §8 says exactly what is and is not protected.</li>
+      <li>Multi-machine or cloud browsers. Loopback only.</li>
+      <li>A GUI for editing personas. The CLI login flow and a YAML file cover it; the dashboard is read-mostly.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§2</div><h2>Architecture</h2></div>
+  <div class="body wide">
+<pre class="diagram"><code>  agent A ─MCP─▶ chrome-devtools-mcp ─CDP ws─┐
+  agent B ─MCP─▶ chrome-devtools-mcp ─CDP ws─┤    <b>:9223</b>                          <b>pipe fd 3/4</b>
+  agent C ─MCP─▶ Playwright MCP ──────CDP ws─┼─▶ <i>tab-scope proxy</i> ───────────▶ Chrome, one profile
+  script  ─────▶ puppeteer.connect() ─CDP ws─┘    │  ownership · persona · env      (no --remote-debugging-port)
+                                                  │
+  agent A ─MCP─▶ <i>persona-registry MCP</i> ──reads──▶ ~/.config/tabscope/personas/*/
+  human   ─────▶ <i>dashboard</i> http://127.0.0.1:9223/   (live owners, tabs, personas)</code></pre>
+    <p>Three pieces, one shared state directory. The proxy is the product. The registry MCP and the dashboard are thin views over the same files and the proxy's runtime state.</p>
+    <div class="note"><span class="k">Key choice</span><p>Chrome is launched with <code>--remote-debugging-pipe</code>, not a port. Only the proxy holds the pipe, so there is no back door around the scoping. Every client, including the dashboard, goes through <code>:9223</code>.</p></div>
+    <p><b>Upstream connections are 1:1.</b> Each client WebSocket gets its own CDP session multiplexed over the pipe by the proxy, and Chrome sees each as a distinct client with its own <code>sessionId</code> space. The proxy filters per connection rather than demultiplexing one shared upstream. This is more file descriptors and far less protocol surgery.</p>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§3</div><h2>Components</h2></div>
+  <div class="body">
+    <h3>Daemon</h3>
+    <p>Launches and supervises Chrome, owns the pipe, serves <code>:9223</code>. Auto-starts on the first client connection behind an atomic <code>mkdir</code> lock; explicit <code>stop</code>. Restarts Chrome on crash and replays persona cookies into fresh contexts. Headless by default; §12 D2.</p>
+    <h3>Proxy</h3>
+    <p>HTTP endpoints that mimic Chrome (<code>/json/version</code>, <code>/json/list</code>, <code>/json/new</code>, <code>/json/close</code>, <code>/json/protocol</code>) and the WebSocket paths <code>/devtools/browser/&lt;id&gt;</code> and <code>/devtools/page/&lt;id&gt;</code>. Persona is chosen by path prefix: <code>/p/katy/json/version</code>. Bare <code>/</code> is the shared default persona.</p>
+    <h3>Ownership engine</h3>
+    <p>Maps every target and every CDP session to an owner. Filters events and results, refuses cross-owner commands, applies tab caps and idle reaping. §5 has the full table.</p>
+    <h3>Persona store and cookie vault</h3>
+    <p>One directory per persona: manifest, notes, encrypted jar. The proxy restores a jar into a browser context when that context is created and saves it back on close. §4.</p>
+    <h3>Registry MCP</h3>
+    <p>Five tools so an agent can choose and annotate a persona: <code>list_personas</code>, <code>verify_persona</code>, <code>note_persona</code>, <code>add_persona</code>, <code>remove_persona</code>. Plus one prompt, <code>/personas</code>, that renders the list. Returns derived facts only, never cookie values.</p>
+    <h3>CLI</h3>
+    <p><code>init</code>, <code>login</code>, <code>list</code>, <code>edit</code>, <code>rm</code>, <code>status</code>, <code>stop</code>, <code>init --revert</code>. §9.</p>
+    <h3>Dashboard</h3>
+    <p>One page served by the proxy. Chrome state and RSS, personas with login state, owners with their tabs and URLs, and three buttons: close tab, evict owner, re-login persona. A "watch" link per tab opens Chrome's DevTools frontend against that target so a human can look without stealing it.</p>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§4</div><h2>Data model</h2></div>
+  <div class="body wide">
+    <h3>On disk, per persona</h3>
+    <div class="tbl"><table>
+      <tr><th>File</th><th>Holds</th><th>Visible to</th><th>Sensitivity</th></tr>
+      <tr><td><code>manifest.yaml</code></td><td>identity, env, role, description, accounts per origin</td><td>agents via registry; may be committed for a team</td><td>low</td></tr>
+      <tr><td><code>notes.jsonl</code></td><td>append-only timestamped notes with author and optional TTL</td><td>agents via registry</td><td>low, untrusted text</td></tr>
+      <tr><td><code>cookies.enc</code></td><td>CDP <code>Network.Cookie[]</code> for the context, AES-256-GCM</td><td>proxy only</td><td>credential</td></tr>
+    </table></div>
+<pre><code>name: katy
+description: "Homeowner with 2 managed properties and an active renewal. Owner-facing flows only."
+env: staging              # staging | prod | local  → origin allowlist, see §8
+exclusive: false          # true = one owner at a time
+read_only: false          # false | strict | inspect | cooperative, see §8
+accounts:
+  - origin: https://stage.doorvest.com
+    username: katy@example.com
+    role: homeowner
+    probe: /messages      # 200 = logged in; redirect = not
+    password_ref: "1password://Doorvest/stage-katy"   # pointer only, never the value
+  - origin: https://demopm6.rentvine.com
+    username: katy.demo
+    role: tenant
+    probe: /portal
+seeded_by: james
+seeded_at: 2026-08-06</code></pre>
+    <h3>Runtime, in the proxy</h3>
+    <dl class="kv">
+      <dt>Owner</dt><dd><code>{ id, persona, connectedAt, lastActivity, sessions: Set&lt;sessionId&gt;, targets: Set&lt;targetId&gt; }</code>. Id comes from <code>?owner=</code> on the WebSocket URL when given, else a random id. A stable id is what makes reclaim after reconnect possible.</dd>
+      <dt>Target</dt><dd><code>{ targetId, type, ownerId | null, browserContextId, openerId, createdAt, lastActivity }</code>. <code>ownerId = null</code> means human or pre-existing; invisible to every agent.</dd>
+      <dt>Persona context</dt><dd><code>{ name, browserContextId | "default", restoredAt, dirty }</code>. <code>dirty</code> flips on any <code>Set-Cookie</code> observed via <code>Network.responseReceivedExtraInfo</code>, which triggers a save on next idle.</dd>
+      <dt>Pending create</dt><dd>A short queue of <code>targetCreated</code> events for targets not yet claimed, drained when the owning <code>createTarget</code> response arrives. §6 explains the race.</dd>
+    </dl>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§5</div><h2>Wire protocol handling</h2></div>
+  <div class="body wide">
+    <p>Everything not listed passes through untouched. <span class="chip filter">filter</span> means scoped to the caller's owner. <span class="chip refuse">refuse</span> returns a CDP error with a plain-English message the agent can act on. <span class="chip rewrite">rewrite</span> changes parameters before forwarding.</p>
+    <div class="tbl"><table>
+      <tr><th>Message</th><th>Direction</th><th>Handling</th><th>Why</th></tr>
+      <tr><td><code>Target.getTargets</code></td><td>cmd</td><td><span class="chip filter">filter</span></td><td>the agent's <code>list_pages</code></td></tr>
+      <tr><td><code>Target.targetCreated / targetInfoChanged / targetDestroyed</code></td><td>evt</td><td><span class="chip filter">filter</span></td><td>hide foreign tabs; hold unclaimed <code>targetCreated</code> in the pending queue</td></tr>
+      <tr><td><code>Target.attachedToTarget / detachedFromTarget</code></td><td>evt</td><td><span class="chip filter">filter</span> + auto-detach</td><td>with <code>setAutoAttach</code> Chrome attaches every client to every new page; the proxy sends <code>detachFromTarget</code> upstream for foreign ones so <code>waitForDebuggerOnStart</code> does not hang the owner</td></tr>
+      <tr><td><code>Target.createTarget</code></td><td>cmd</td><td><span class="chip rewrite">rewrite</span> + cap</td><td>inject the persona's <code>browserContextId</code>; refuse the 4th tab with the three open URLs named</td></tr>
+      <tr><td><code>Target.attachToTarget / closeTarget / activateTarget</code></td><td>cmd</td><td><span class="chip refuse">refuse</span> on foreign id</td><td>ownership</td></tr>
+      <tr><td>any message with a foreign <code>sessionId</code></td><td>both</td><td><span class="chip filter">filter</span></td><td>flattened sessions carry the id on every frame</td></tr>
+      <tr><td><code>Target.createBrowserContext / disposeBrowserContext / getBrowserContexts</code></td><td>cmd</td><td><span class="chip rewrite">rewrite</span> / <span class="chip filter">filter</span></td><td>map <code>isolatedContext</code> names to persona contexts; hide others</td></tr>
+      <tr><td><code>Storage.getCookies / setCookies / clearCookies</code></td><td>cmd</td><td><span class="chip rewrite">rewrite</span> <code>browserContextId</code></td><td>pin to the caller's persona context</td></tr>
+      <tr><td><code>Page.navigate</code>, <code>createTarget.url</code></td><td>cmd</td><td><span class="chip refuse">refuse</span> off-allowlist</td><td>env enforcement, §8</td></tr>
+      <tr><td><code>Fetch.requestPaused</code> (proxy-installed)</td><td>evt</td><td>block or continue</td><td>catches in-page navigations and, for <code>read_only</code>, non-GET requests</td></tr>
+      <tr><td><code>Page.bringToFront</code></td><td>cmd</td><td>drop, reply ok</td><td>no foreground stealing in headed mode</td></tr>
+      <tr><td><code>Browser.close / crash / crashGpuProcess</code></td><td>cmd</td><td><span class="chip refuse">refuse</span></td><td>would take every owner down</td></tr>
+      <tr><td><code>Browser.setDownloadBehavior</code></td><td>cmd</td><td><span class="chip rewrite">rewrite</span> path</td><td>global in Chrome; give each owner its own download dir</td></tr>
+      <tr><td><code>Emulation.*</code>, <code>Network.*</code>, <code>Input.*</code>, <code>Page.captureScreenshot</code>, <code>Performance.*</code>, <code>HeapProfiler.*</code></td><td>cmd</td><td><span class="chip pass">pass</span></td><td>per-target already</td></tr>
+      <tr><td><code>GET /json/list</code></td><td>http</td><td><span class="chip filter">filter</span> by persona path</td><td>HTTP has no owner; scope by persona, document as weaker</td></tr>
+      <tr><td><code>PUT /json/new</code></td><td>http</td><td>owned by a synthetic per-persona http owner</td><td>agent-browser and curl users</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§6</div><h2>Lifecycles</h2></div>
+  <div class="body">
+    <h3>Client connects</h3>
+    <ol>
+      <li><code>GET /p/katy/json/version</code> returns a <code>webSocketDebuggerUrl</code> that embeds the persona and a fresh or supplied owner id.</li>
+      <li>On WebSocket open the proxy opens its own upstream session over the pipe, creates or reuses the <code>katy</code> browser context, and restores the jar if the context is new.</li>
+      <li>If the owner id matches one inside its grace window, its targets are reattached and the grace timer cancels.</li>
+    </ol>
+    <h3>Tab creation and the attribution race</h3>
+    <p>Chrome emits <code>targetCreated</code> to every client <em>before</em> the <code>createTarget</code> response reaches the caller. So at the moment the event arrives, nobody owns the target. The proxy holds unclaimed <code>targetCreated</code> events in the pending queue; when a <code>createTarget</code> response with that <code>targetId</code> arrives on owner X's connection, X takes the target and only X's queued copy is released. Events that are never claimed within 2 s belong to a human and stay hidden. Popups arrive with <code>openerId</code> and inherit immediately, no queue.</p>
+    <h3>Disconnect</h3>
+    <p>Tabs enter a grace window (default 120 s) so a Claude Code <code>/mcp</code> reconnect gets them back. After that, close them and save the persona jar if dirty. Grace is the one knob exposed in config.</p>
+    <h3>Idle reaping</h3>
+    <p>A target with no CDP traffic for 15 minutes is closed and its owner told on next command. Owners with zero targets and no traffic for 30 minutes are evicted. Both thresholds configurable.</p>
+    <h3>Chrome crash</h3>
+    <p>The daemon relaunches Chrome, recreates every persona context, restores jars, and returns <code>Target.targetCrashed</code> to each owner for its old targets. Clients reconnect on their own; chrome-devtools-mcp already handles a dropped browser.</p>
+    <h3>Persona delete</h3>
+    <p>Refused while any owner holds it, naming the owner. Otherwise: close tabs, dispose the context, shred the jar, remove the directory.</p>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§7</div><h2>Persona selection and identity</h2></div>
+  <div class="body">
+    <p>Two ways to choose a persona, both landing on the same context:</p>
+    <ul>
+      <li><b>By URL path.</b> <code>--browserUrl=http://127.0.0.1:9223/p/katy</code>. Works for every CDP client, no tool call needed. This is the default the CLI writes.</li>
+      <li><b>By context name.</b> <code>new_page(url, isolatedContext: "katy")</code> from chrome-devtools-mcp. The proxy maps the name to the persona. This lets one MCP session hold tabs in several personas.</li>
+    </ul>
+    <p>A persona marked <code>exclusive</code> is leased to one owner at a time; a second requester gets a refusal that names the holder. This is the current profile-lease behaviour, moved to where the conflict actually is.</p>
+    <h3>Co-tenancy: sharing is the default, and the agent is told</h3>
+    <p>A persona without <code>exclusive</code> accepts any number of owners. Each gets its own tabs in the same context and the same login. Because CDP has no channel for a note, the notice reaches the agent through the tool layer:</p>
+    <ul>
+      <li><code>list_personas</code> returns <code>holders: [{ owner, tabs, since }]</code> and a one-line sharing sentence per persona.</li>
+      <li>An exclusive refusal names the holder: "katy is held by owner ttys004 since 14:02 with 2 tabs. Pick another persona or wait."</li>
+      <li>The wrapper packaging (moved from v0.4 to v0.3) appends one line to the first <code>new_page</code> result on a shared persona: "Shared login: 1 other agent holds katy. Your tabs are yours; your actions are attributed to the same user." This is the only path that reaches an agent that never asked.</li>
+      <li><code>init --hooks</code> optionally installs a Claude Code PreToolUse hook that announces the same before the first browser call.</li>
+    </ul>
+    <p>The notice always states what sharing means: one server-side session, so a write by either agent is attributed to the same user, and a logout by one logs out both.</p>
+    <p><b>Owner identity.</b> The proxy needs a stable owner id to reclaim tabs after a reconnect. The launcher wrapper derives one from the parent process's controlling tty and passes it as <code>?owner=</code>; scripts pass their own. With no id given, ownership is the connection and reclaim is off.</p>
+    <p><b>Subagents.</b> Claude Code subagents share their parent's MCP connection, so parent plus subagents are one owner. The upstream <code>pageId</code> routing separates them inside that owner. Nothing extra needed.</p>
+    <div class="callout"><span class="k">Decision D3</span><p>Shared login only, or persona contexts from day one? Persona contexts are the general case and the shared login is the degenerate case where every owner maps to the default context. Recommend building contexts first so the shared case costs nothing extra.</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§8</div><h2>Security model</h2></div>
+  <div class="body">
+    <h3>Protected</h3>
+    <ul>
+      <li>A well-behaved agent cannot see, attach to, navigate, or close another owner's tabs, or read another persona's cookies through CDP. With <code>--remote-debugging-pipe</code> there is no port to bypass the proxy.</li>
+      <li>A <code>staging</code> persona cannot reach prod. The allowlist is derived from the manifest's account origins; <code>Page.navigate</code> and <code>createTarget</code> are refused off-list, and a proxy-installed <code>Fetch</code> interceptor blocks in-page navigations to foreign origins.</li>
+      <li>A <code>read_only</code> persona cannot submit. The same interceptor, installed at the request stage so it sees method, headers, and body, answers blocked requests with a 403 whose body names the policy, so the agent's network log explains itself. Read-only sessions also set <code>Network.setBypassServiceWorker</code> and refuse WebSocket upgrades off the allowlist, the two paths <code>Fetch</code> cannot see. This is the standing "prod browser is read-only" rule, enforced by the tool.</li>
+      <li>Jars are AES-256-GCM with a key held in the macOS Keychain, matching Chrome's own cookie encryption. On Linux, <code>age</code> with a <code>0600</code> identity file. Plaintext jars are never written.</li>
+    </ul>
+    <h3>Read-only has three levels</h3>
+    <p>"GET only" is the wrong rule for apps that read through POST. Every Next.js server action is a POST with a <code>Next-Action</code> header, and GraphQL reads are POSTs too, so a strict persona would load a page shell and nothing inside it.</p>
+    <div class="tbl"><table>
+      <tr><th>Level</th><th>Allows</th><th>Fits</th></tr>
+      <tr><td><code>strict</code></td><td>GET, HEAD, OPTIONS</td><td>REST sites, marketing pages, RentVine's UI</td></tr>
+      <tr><td><code>inspect</code></td><td>plus POST whose body matches a rule, e.g. GraphQL <code>query</code> but not <code>mutation</code></td><td>GraphQL apps</td></tr>
+      <tr><td><code>cooperative</code></td><td>plus POST carrying <code>X-Read-Only: 1</code>, which the proxy stamps on every request and the app honours</td><td>Next.js server actions, opaque on the wire</td></tr>
+    </table></div>
+    <p>Cooperative mode is the honest one for server-action apps: the proxy cannot tell a read action from a write action, so the app decides. In next-app that is one check in <code>loadAdminContext</code> plus an annotation of which actions write, which the existing authz scanner already walks.</p>
+    <h3>Not protected</h3>
+    <ul>
+      <li>A malicious local process. It can read the config directory as your user. Same as Chrome itself.</li>
+      <li>Two owners on the same non-exclusive persona share one server-side session. Logout in one logs out both. The proxy denies navigation to configured logout paths, which covers the common accident, not intent.</li>
+      <li>Notes are text written by other agents. The registry returns them as data with author and age; never as instructions.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§9</div><h2>Install and CLI</h2></div>
+  <div class="body wide">
+<pre><code>npx tabscope init                 # detect Chrome; write or rewrite MCP entries for Claude Code, Codex, Cursor
+npx tabscope login katy --env staging --origin https://stage.doorvest.com
+                                  # opens a throwaway headed Chrome, "log in, then press Enter",
+                                  # exports + encrypts the jar, writes the manifest, asks for a description
+npx tabscope list                 # personas, login state (last probe), holder, tab count
+npx tabscope edit katy            # $EDITOR on manifest.yaml; hot-reloaded
+npx tabscope rm katy              # refused while held
+npx tabscope status               # daemon, Chrome pid + RSS, owners → tabs → URLs
+npx tabscope stop
+npx tabscope init --revert        # restore the original MCP configs</code></pre>
+    <p><b>What init writes.</b> For an existing <code>chrome-devtools</code> entry it adds <code>--browserUrl=http://127.0.0.1:9223</code> and keeps every other flag. For an existing <code>playwright</code> entry it adds <code>--cdp-endpoint</code>. For a fresh install it writes a launcher as the MCP <code>command</code> that execs <code>npx chrome-devtools-mcp@latest --browserUrl=… "$@"</code>, so a user who pastes the upstream README config verbatim still lands on the proxy. It also writes the <code>personas</code> registry entry beside it.</p>
+    <p><b>Login uses a throwaway Chrome.</b> The daemon may be headless, and Chrome cannot switch modes live, so <code>login</code> spawns a separate headed Chrome on a temp profile, lets the human clear the captcha, exports cookies over CDP, and imports them into the daemon's context. The jar is the artifact; the temp profile is deleted.</p>
+    <p><b>Config locations.</b> <code>~/.config/tabscope/config.yaml</code> for daemon settings (port, grace, idle, headless, Chrome path). <code>~/.config/tabscope/personas/&lt;name&gt;/</code> for personas. An optional repo-local <code>.tabscope/personas/*.yaml</code> holds committed manifests for a team; jars stay per machine.</p>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§10</div><h2>Compatibility and tests</h2></div>
+  <div class="body wide">
+    <div class="tbl"><table>
+      <tr><th>Client</th><th>Adoption</th><th>Test</th></tr>
+      <tr><td>chrome-devtools-mcp (pinned puppeteer-core per release)</td><td><code>--browserUrl</code></td><td>two MCP sessions: each <code>list_pages</code> shows only its own tab; <code>close_page</code> on a foreign id is refused</td></tr>
+      <tr><td>Playwright MCP / <code>connectOverCDP</code></td><td><code>--cdp-endpoint</code></td><td>same two-session test; contexts survive reconnect</td></tr>
+      <tr><td>Puppeteer script</td><td><code>puppeteer.connect({ browserURL })</code></td><td>handshake: <code>setDiscoverTargets</code>, <code>setAutoAttach</code> flatten, <code>attachedToTarget</code> ordering</td></tr>
+      <tr><td>agent-browser</td><td><code>connect 9223</code></td><td><code>/json/new</code> path and synthetic http owner</td></tr>
+      <tr><td>Chrome stable, beta</td><td>daemon launch</td><td>pipe launch, <code>Storage.setCookies</code> with <code>browserContextId</code>, <code>Fetch</code> patterns</td></tr>
+    </table></div>
+    <p>The handshake test matrix is the maintenance cost of this project. Puppeteer's connect sequence has changed across majors, and chrome-devtools-mcp pins a specific puppeteer-core. CI runs the matrix against the last three chrome-devtools-mcp releases and current Chrome stable and beta, with a real Chrome, not a mock.</p>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§11</div><h2>Milestones</h2></div>
+  <div class="body wide">
+    <div class="milestones">
+      <div class="ms">
+        <div class="v">v0.1<small>~2 weekends</small></div>
+        <div>
+          <h4>Proxy, ownership, the demo</h4>
+          <p>Pipe launch, HTTP mimicry, 1:1 upstream sessions, ownership engine with the pending-create queue, tab cap, grace and idle reaping, single shared persona, <code>init</code> and <code>init --revert</code>.</p>
+          <div class="exit"><b>Exit:</b> the README GIF. Two Claude Code terminals, one Chrome in Activity Monitor, each session's <code>list_pages</code> shows only its own tab.</div>
+        </div>
+      </div>
+      <div class="ms">
+        <div class="v">v0.2<small>~1 weekend</small></div>
+        <div>
+          <h4>Personas</h4>
+          <p>Browser context per persona, cookie vault with Keychain key, <code>login</code> flow with throwaway Chrome, path and <code>isolatedContext</code> selection, <code>exclusive</code> leases, env allowlist and <code>read_only</code> via <code>Fetch</code>.</p>
+          <div class="exit"><b>Exit:</b> restart the daemon; katy is still logged in; a staging persona cannot open prod.</div>
+        </div>
+      </div>
+      <div class="ms">
+        <div class="v">v0.3<small>~1 weekend</small></div>
+        <div>
+          <h4>Registry MCP and dashboard</h4>
+          <p>Five tools and the <code>/personas</code> prompt, notes with TTL and author, probe-based login verification, the one-page dashboard with watch links, and the wrapper packaging that re-exports chrome-devtools-mcp's tools so the co-tenancy notice can ride on <code>new_page</code>.</p>
+          <div class="exit"><b>Exit:</b> an agent given "check the renewal flow" picks katy from descriptions alone.</div>
+        </div>
+      </div>
+      <div class="ms">
+        <div class="v">v0.4<small>later</small></div>
+        <div>
+          <h4>Operations</h4>
+          <p>Per-owner CDP audit log, per-owner rate limits, Playwright MCP and agent-browser in CI, Linux vault.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§12</div><h2>Open decisions</h2></div>
+  <div class="body wide">
+    <div class="decisions">
+      <div class="dec"><div class="d">D1</div><div><h4>Owner identity source</h4><p>Connection-only (simple, no reclaim) versus <code>?owner=</code> derived from the parent tty by the launcher (reclaim works, one more moving part). <b>Recommend</b> the tty-derived id with connection-only as the fallback.</p></div></div>
+      <div class="dec"><div class="d">D2</div><div><h4>Headless or headed daemon</h4><p>Headless is quieter and removes foreground stealing. Headed lets a human glance at a window. The dashboard's watch link covers glancing. <b>Recommend</b> headless default, <code>headless: false</code> in config.</p></div></div>
+      <div class="dec"><div class="d">D3</div><div><h4>Personas in v0.1 or v0.2</h4><p>Contexts are the general case. Shipping shared-login first gets the demo out sooner. <b>Recommend</b> v0.2 as scheduled; the demo does not need personas.</p></div></div>
+      <div class="dec"><div class="d">D4</div><div><h4>Agent-created personas</h4><p>May an agent run the login flow and save a new jar, or is the registry human-curated? Self-healing versus junk accumulation. <b>Recommend</b> human-curated in v0.3; revisit with usage.</p></div></div>
+      <div class="dec"><div class="d">D5</div><div><h4>Language</h4><p>Node/TypeScript matches puppeteer, chrome-devtools-mcp, and the npx install story. Go or Rust would give a single binary and a lower idle footprint. <b>Recommend</b> TypeScript; the proxy is protocol plumbing, not compute.</p></div></div>
+      <div class="dec"><div class="d">D6</div><div><h4>Name</h4><p><code>tabscope</code> is used above as a placeholder. Check npm and GitHub before committing.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="label"><div class="n">§13</div><h2>Risks</h2></div>
+  <div class="body">
+    <ul>
+      <li><b>Handshake drift.</b> A puppeteer-core major can change the connect sequence and break attribution silently. Mitigation: the CI matrix in §10 and an integration test that fails loudly when a client sees a foreign target.</li>
+      <li><b>Upstream absorption.</b> chrome-devtools-mcp could add client-scoped target visibility. The persona vault, env enforcement, and multi-client generality would survive that; ownership alone would not.</li>
+      <li><b>OpenChrome.</b> Already ships a broker with tab routing for its own toolset. The proxy's answer is that it works under chrome-devtools-mcp and Playwright, which OpenChrome replaces rather than supports.</li>
+      <li><b>Fetch interception cost.</b> Installing <code>Fetch.enable</code> on every session adds a round trip per request. Only install it for personas with an allowlist or <code>read_only</code>; the shared default persona pays nothing.</li>
+      <li><b>Cookie-only persistence.</b> Apps that keep auth in <code>localStorage</code> lose it across restarts. Doorvest's Cognito tokens are cookies. Add <code>DOMStorage</code> save and restore per known origin in v0.4 if a user needs it.</li>
+    </ul>
+  </div>
+</section>
+
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.1 — what the code taught us</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-14.</b> 31 unit tests, 11 integration tests against a real Chrome 152, all green. The exit criterion holds: two real <code>chrome-devtools-mcp</code> servers on one Chrome, and each <code>list_pages</code> shows only its own page.</p>
+    <h3>Four defects the tests caught, none of which the design predicted</h3>
+    <ul>
+      <li><b>A tab is two targets.</b> Chrome 152 answers <code>Target.createTarget</code> with the PAGE id, but first announces a separate <code>tab</code> target that wraps it — a different id, with no field linking the two. Claiming only the returned id left the tab unowned, its attach events held then dropped, and every client hung for 30 s on <code>newPage()</code>. Fix: one create is in flight at a time across all owners, so the window a tab appears in unambiguously names its creator.</li>
+      <li><b>A refusal with no session id reads as a hang.</b> Puppeteer routes responses by <code>sessionId</code> before it looks at the request id, so a refusal answered at browser level landed in the wrong callback map and the caller's promise never settled. The agent sees a 60 s timeout instead of "no". Every local reply now echoes the command's session.</li>
+      <li><b>Sessions bound at delivery are bound to nobody.</b> Chrome attaches to a new tab before the response claims it, so binding a session to an owner at attach time bound it to nothing and every later frame on it was dropped. Session access is now derived from target ownership, which resolves correctly once the claim lands.</li>
+      <li><b>Chrome's own furniture was being held.</b> The omnibox popup, extension background pages and service workers all auto-attach, and a client asking for <code>waitForDebuggerOnStart</code> leaves each paused. Holding them stalled renderers for the whole claim window. Only <code>page</code> and <code>tab</code> are ownable at browser level; everything else is dropped on sight and unblocked.</li>
+    </ul>
+    <h3>Deviations from this spec, and why</h3>
+    <ul>
+      <li><b>§2 said 1:1 upstream connections; the build multiplexes.</b> A pipe is a single connection by construction, so the proxy rewrites ids and routes responses per client. The pipe's security property is what mattered, and it is kept.</li>
+      <li><b>§5's auto-detach of foreign targets does not apply.</b> With one upstream connection there is one attach per target, so detaching would take the owner's session with it. Non-owners simply never receive the event.</li>
+      <li><b>The path form (<code>/p/&lt;persona&gt;</code>, <code>/o/&lt;owner&gt;</code>) cannot work with <code>--browserUrl</code>.</b> Puppeteer resolves <code>/json/version</code> as an absolute path, discarding any path or query on the base URL. Naming an agent therefore requires the <code>--wsEndpoint</code> form; <code>--browserUrl</code> still isolates, with a per-connection identity and no reclaim. The launcher that derives an owner from the tty (D1) moves to v0.2.</li>
+      <li><b>The tab cap counts pages, not targets.</b> Tab wrappers, iframes and workers are owned so their events route, but they were never what the limit meant.</li>
+    </ul>
+    <h3>A test that proved nothing</h3>
+    <p>Disabling <code>filterTargetInfos</code> entirely left the MCP isolation test green. <code>list_pages</code> reads puppeteer's own registry, built from events, not from <code>Target.getTargets</code> — so the filter is real but only for clients that call that method directly. The guarantee for every puppeteer-based client lives in event routing, and mutating <em>that</em> fails the test. Worth stating plainly: without the mutation pass, v0.1 would have shipped with a headline test that could not fail.</p>
+  </div>
+</section>
+
+<footer>Draft for discussion. Every number above is an estimate until measured.</footer>
+</div>
