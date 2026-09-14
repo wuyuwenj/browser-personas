@@ -537,5 +537,23 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.5 — any site, any login method</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-14.</b> 59 unit tests and 36 integration tests. The persona model assumed a username, a password and one origin. Every one of those assumptions breaks on a Google or SSO login, and the first was a real defect rather than a gap: <b>a persona fenced to its own app could never complete an OAuth sign-in</b>, because the redirect to the provider was off its own allowlist.</p>
+    <h3>What a login now captures</h3>
+    <ul>
+      <li><b>Web storage, not just cookies.</b> Firebase, Supabase, Auth0's SPA SDK and MSAL keep their tokens in <code>localStorage</code>. A cookies-only jar restores a session the application still treats as signed out, which looks exactly like a broken tool. Reading and writing it needs a document on that origin, so both directions open a throwaway tab.</li>
+      <li><b>Cookies for every origin the login touched</b>, which was already true and turns out to be the thing that makes a later silent re-auth work.</li>
+      <li><b>The provider's origins</b>, recorded as <code>auth_origins</code> and allowed. They are learned from a real sign-in rather than configured, so allowing them grants nothing the app does not already do.</li>
+      <li><b>The signed-in path</b>, inferred from wherever the login landed, when none was given.</li>
+    </ul>
+    <p>The jar gained a version. A v1 jar is a bare cookie array and is still read, because upgrading should not log every persona out.</p>
+    <h3>The defect the test caught</h3>
+    <p>The upstream adapter dropped <code>sessionId</code>, so every <code>Runtime.evaluate</code> meant for a page ran at browser level instead — succeeding, and doing nothing. Storage capture and replay both silently no-opped. Worth stating as a rule: a CDP call that must run inside a page is meaningless without its session, and the failure is silent in both directions.</p>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>

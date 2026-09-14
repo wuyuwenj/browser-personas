@@ -105,7 +105,7 @@ export class BrowserPersonasDaemon {
     this.#personas = new PersonaManager(
       this.#personasDir,
       this.#configDir,
-      { call: (method, params) => this.#callUpstream(method, params ?? {}) },
+      { call: (method, params, sessionId) => this.#callUpstream(method, params ?? {}, sessionId) },
     );
     this.#consoleToken = loadOrCreateToken(join(this.#configDir, "run", "console.token"));
     this.#http = createServer((req, res) => void this.#onHttp(req, res));
@@ -229,11 +229,23 @@ export class BrowserPersonasDaemon {
 
   // ---- upstream -----------------------------------------------------------
 
-  #callUpstream(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  /**
+   * A proxy-originated call. `sessionId` matters more than it looks: anything that has to
+   * run INSIDE a page — reading or writing that page's web storage — is meaningless
+   * without it, and dropping it silently sends the command to the browser instead, where
+   * it succeeds and does nothing.
+   */
+  #callUpstream(
+    method: string,
+    params: Record<string, unknown> = {},
+    sessionId?: string,
+  ): Promise<Record<string, unknown>> {
     return new Promise((resolve) => {
       const id = this.#nextUpstreamId++;
       this.#internal.set(id, resolve);
-      this.#transport?.send({ id, method, params });
+      const frame: Record<string, unknown> = { id, method, params };
+      if (sessionId) frame["sessionId"] = sessionId;
+      this.#transport?.send(frame);
     });
   }
 
@@ -854,6 +866,7 @@ export class BrowserPersonasDaemon {
           exclusive: Boolean(manifest?.exclusive),
           readOnly: manifest?.read_only ?? false,
           origins: this.#personas.origins(name),
+          authOrigins: manifest?.auth_origins ?? [],
           accounts: (manifest?.accounts ?? []).map((a) => ({
             origin: a.origin,
             username: a.username,

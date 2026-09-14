@@ -202,18 +202,38 @@ One page, printed with its token when the daemon starts. From it you can:
 
 - **Add a persona** — name, app URL, username, the path that proves you are signed in,
   environment, read-only level, and whether it is exclusive.
-- **Log in.** Press the button, a browser window opens, you sign in. The page polls your
-  app through the very cookies the login is producing, so the green dot means the
-  application said yes, not that you said you were done. Then **Save this login**.
+- **Log in, however that site wants.** Press the button, a browser window opens, and you
+  sign in with a password form, Google, GitHub, SSO, a magic link, two factors — anything.
+  The page polls your app through the very cookies the login is producing, so the green
+  dot means the application said yes, not that you said you were done. Then **Save this
+  login**.
 - **Watch a tab.** Every agent's tabs are listed with a link that opens Chrome's own
   DevTools against one, without taking it from the agent.
 - **Edit or delete.** Deleting is refused while an agent holds the persona, naming them.
 
 The CLI still does all of it, unchanged, because scripts and CI need it.
 
+### Any site, any login method
+
+Only a name and an app URL are required. Everything else is learned from a real sign-in:
+
+- **The login browser is unfenced**, so the redirect to `accounts.google.com` or your SSO
+  provider works. A persona fenced to its own app could never complete an OAuth login.
+- **Cookies for every origin involved** are captured, not just the app's — the provider's
+  session is what makes a later silent re-auth possible.
+- **Web storage is captured too.** Firebase, Supabase, Auth0's SPA SDK and MSAL keep their
+  tokens in `localStorage`, so a cookies-only jar restores a session the application still
+  treats as signed out.
+- **The provider's origins are remembered** as `auth_origins` and allowed, so the persona
+  can re-authenticate later without you widening the fence by hand. They were learned from
+  a real login, so allowing them grants nothing the app does not already do.
+- **The signed-in path is inferred** from wherever the login landed you, if you did not
+  give one.
+
 ### Passwords
 
-Storing one is optional and off by default. A cookie jar holds a session that expires; a
+Storing one is optional, off by default, and useless for OAuth — there is no local
+password in a Google or SSO sign-in. A cookie jar holds a session that expires; a
 password does not, so the same file gains a much longer blast radius. What it buys is the
 **Fill the form** button and automatic re-login when a session dies, which matters for
 long unattended runs and little else. The default stays `password_ref`, a pointer to
@@ -264,9 +284,9 @@ you, the same as it can read Chrome's. The isolation here is between well-behave
 
 ## Status
 
-v0.4: the proxy, tab ownership, personas, the registry MCP, and the console. Still ahead
-are per-owner audit logs and rate limits, `localStorage` persistence for apps that keep
-auth there, and Linux vault coverage. The design and a per-milestone record of what the
+v0.5: the proxy, tab ownership, personas that survive any login method, the registry MCP,
+and the console. Still ahead are per-owner audit logs and rate limits, IndexedDB for the
+few SDKs that use it, and Linux vault coverage. The design and a per-milestone record of what the
 real browser taught us are in [`docs/design.html`](docs/design.html).
 
 ## Development

@@ -7,6 +7,7 @@ import {
 } from "../personas/manifest.js";
 import { hasPolicy } from "../personas/policy.js";
 import { readJar, vaultKey, writeJar, type StoredCookie } from "../personas/vault.js";
+import { captureStorage, restoreStorage } from "../personas/storage.js";
 import type { OwnerId } from "./ownership.js";
 
 export const DEFAULT_PERSONA = "default";
@@ -21,7 +22,11 @@ export type PersonaContext = {
 };
 
 type Upstream = {
-  call: (method: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  call: (
+    method: string,
+    params?: Record<string, unknown>,
+    sessionId?: string,
+  ) => Promise<Record<string, unknown>>;
 };
 
 /**
@@ -125,19 +130,31 @@ export class PersonaManager {
     return ctx;
   }
 
-  /** Put a persona's saved cookies back into its live context. */
+  /**
+   * Put a persona's saved session back into its live context: cookies first, then any web
+   * storage. Storage replay needs a document on each origin, so it costs a throwaway tab
+   * per origin and only runs for personas that actually captured some.
+   */
   async restore(name: string): Promise<number> {
     const ctx = this.#contexts.get(name);
     if (!ctx) return 0;
-    const cookies = readJar(jarPath(this.#personasDir, name), this.#vaultKey());
-    if (cookies.length === 0) return 0;
-    const params: Record<string, unknown> = { cookies };
-    if (ctx.browserContextId) params["browserContextId"] = ctx.browserContextId;
-    await this.#upstream.call("Storage.setCookies", params);
-    return cookies.length;
+    const jar = readJar(jarPath(this.#personasDir, name), this.#vaultKey());
+    if (jar.cookies.length > 0) {
+      const params: Record<string, unknown> = { cookies: jar.cookies };
+      if (ctx.browserContextId) params["browserContextId"] = ctx.browserContextId;
+      await this.#upstream.call("Storage.setCookies", params);
+    }
+    if (Object.keys(jar.storage).length > 0) {
+      await restoreStorage(
+        { send: (method, params, sessionId) => this.#upstream.call(method, params ?? {}, sessionId) },
+        jar.storage,
+        ctx.browserContextId,
+      ).catch(() => 0);
+    }
+    return jar.cookies.length;
   }
 
-  /** Write a persona's current cookies back to disk. Values never pass through a log. */
+  /** Write a persona's current session back to disk. Values never pass through a log. */
   async persist(name: string): Promise<number> {
     const ctx = this.#contexts.get(name);
     if (!ctx) return 0;
@@ -145,8 +162,21 @@ export class PersonaManager {
     if (ctx.browserContextId) params["browserContextId"] = ctx.browserContextId;
     const result = await this.#upstream.call("Storage.getCookies", params);
     const cookies = Array.isArray(result["cookies"]) ? (result["cookies"] as StoredCookie[]) : [];
-    if (cookies.length === 0) return 0;
-    writeJar(jarPath(this.#personasDir, name), this.#vaultKey(), cookies);
+
+    // Re-read storage for the origins the jar already knows about. Anything else would
+    // mean opening tabs on origins this persona may never have used.
+    const previous = readJar(jarPath(this.#personasDir, name), this.#vaultKey());
+    const origins = Object.keys(previous.storage);
+    const storage = origins.length
+      ? await captureStorage(
+          { send: (method, p, sessionId) => this.#upstream.call(method, p ?? {}, sessionId) },
+          origins,
+          ctx.browserContextId,
+        ).catch(() => previous.storage)
+      : previous.storage;
+
+    if (cookies.length === 0 && Object.keys(storage).length === 0) return 0;
+    writeJar(jarPath(this.#personasDir, name), this.#vaultKey(), { version: 2, cookies, storage });
     ctx.dirty = false;
     return cookies.length;
   }

@@ -8,6 +8,8 @@ export type PersonaStatus = {
   exclusive: boolean;
   readOnly: ReadOnlyLevel;
   origins: string[];
+  /** Identity-provider origins learned from a real login, allowed so re-auth works. */
+  authOrigins: string[];
   accounts: { origin: string; username?: string; role?: string }[];
   leaseHolder: string | null;
   /** Agents connected on this persona right now. This is the co-tenancy signal. */

@@ -103,3 +103,26 @@ describe("combined", () => {
     ).toBe(false);
   });
 });
+
+describe("auth origins", () => {
+  it("allows the identity provider the app itself redirected to", async () => {
+    const { allowedOrigins, primaryOrigins } = await import("../../src/personas/manifest.js");
+    const manifest: PersonaManifest = {
+      name: "katy",
+      env: "staging",
+      accounts: [{ origin: "http://localhost:3005" }],
+      auth_origins: ["https://accounts.google.com"],
+    };
+
+    // The fence has to let a Google sign-in through, or the persona can never
+    // re-authenticate when its session expires mid-run.
+    expect(checkOrigin(manifest, "https://accounts.google.com/o/oauth2/auth").allowed).toBe(true);
+    expect(checkOrigin(manifest, "http://localhost:3005/x").allowed).toBe(true);
+    // It still fences everything else, which is the point.
+    expect(checkOrigin(manifest, "https://doorvest.com/admin").allowed).toBe(false);
+
+    expect(allowedOrigins(manifest)).toEqual(["http://localhost:3005", "https://accounts.google.com"]);
+    // The persona is still scoped to its own app; the provider is a means, not the scope.
+    expect(primaryOrigins(manifest)).toEqual(["http://localhost:3005"]);
+  });
+});

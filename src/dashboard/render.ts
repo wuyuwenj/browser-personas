@@ -91,8 +91,8 @@ export function renderConsole(
     <div class="grid">
       <div><label for="f-name">Name</label><input id="f-name" placeholder="katy" autocomplete="off"></div>
       <div><label for="f-origin">App URL</label><input id="f-origin" placeholder="http://localhost:3005" autocomplete="off"></div>
-      <div><label for="f-username">Username</label><input id="f-username" placeholder="katy@example.com" autocomplete="off"></div>
-      <div><label for="f-probe">Signed-in path</label><input id="f-probe" placeholder="/my-homes" autocomplete="off"></div>
+      <div><label for="f-username">Who is this (optional)</label><input id="f-username" placeholder="katy@example.com" autocomplete="off"></div>
+      <div><label for="f-probe">Signed-in path (optional)</label><input id="f-probe" placeholder="learned from your login" autocomplete="off"></div>
       <div><label for="f-env">Environment</label><input id="f-env" placeholder="staging" autocomplete="off"></div>
       <div><label for="f-ro">Read-only</label>
         <select id="f-ro">
@@ -103,12 +103,18 @@ export function renderConsole(
         </select>
       </div>
       <div><label for="f-desc">Description</label><input id="f-desc" placeholder="Owner with an active renewal" autocomplete="off"></div>
-      <div><label for="f-pw">Password (optional)</label><input id="f-pw" type="password" autocomplete="new-password"></div>
+      <div><label for="f-pw">Password (rarely needed)</label><input id="f-pw" type="password" autocomplete="new-password"></div>
       <label class="check"><input type="checkbox" id="f-excl"> One agent at a time</label>
     </div>
-    <p class="hint">The app URL is also the fence: this persona can only be navigated there.
-       A password is stored encrypted and only ever typed into the login form — leave it blank
-       and you sign in by hand once, which is all most personas need.</p>
+    <p class="hint"><b>Only the name and the app URL are required.</b> Press <b>Log in</b> and sign in
+       however that site wants — a password form, Google, GitHub, SSO, a magic link, two factors. The
+       login browser is unfenced, so the redirect to your identity provider works, and everything the
+       sign-in leaves behind is captured: cookies for every origin involved, and the tokens apps keep
+       in local storage. The provider origins are remembered too, so the persona can re-authenticate
+       later without you widening anything by hand.</p>
+    <p class="hint">The app URL is the fence: outside its own origins, this persona cannot be
+       navigated anywhere. A stored password only buys the <b>Fill the form</b> button and is useless
+       for OAuth, so leave it blank unless the site has a plain password form you re-enter often.</p>
     <div class="row"><button class="primary" id="create" type="submit">Create persona</button></div>
     <div class="err" id="new-err" hidden></div>
   </form>
@@ -174,6 +180,9 @@ function personaCard(p) {
     '<h3><span class="dot ' + dot + '" title="' + dotTitle + '"></span>' + esc(p.name) + badges + '</h3>' +
     (p.description ? '<p>' + esc(p.description) + '</p>' : "") +
     (p.origins.length ? '<div class="scope">may reach ' + p.origins.map((o) => '<code>' + esc(o) + '</code>').join(", ") + '</div>' : "") +
+    (p.authOrigins && p.authOrigins.length
+      ? '<div class="scope">signs in through ' + p.authOrigins.map((o) => '<code>' + esc(o) + '</code>').join(", ") + '</div>'
+      : "") +
     '<div class="holders">' + holders + '</div>' +
     '<div class="row">' +
       '<button data-act="login" data-name="' + esc(p.name) + '">Log in</button>' +

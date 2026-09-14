@@ -77,20 +77,43 @@ export function unseal(key: Buffer, sealed: string): string {
 
 export type StoredCookie = Record<string, unknown>;
 
-export function writeJar(path: string, key: Buffer, cookies: StoredCookie[]): void {
+/**
+ * What a login produced.
+ *
+ * Version 1 was a bare cookie array. Version 2 adds per-origin web storage, because a
+ * login through Google, GitHub or any OAuth provider commonly leaves its token in
+ * `localStorage` and nothing useful in a cookie — a cookies-only jar restores a session
+ * the application still treats as signed out. A v1 jar is still read, so an existing
+ * login is not silently invalidated by an upgrade.
+ */
+export type Jar = {
+  version: 2;
+  cookies: StoredCookie[];
+  storage: Record<string, { local: Record<string, string>; session: Record<string, string> }>;
+};
+
+export const EMPTY_JAR: Jar = { version: 2, cookies: [], storage: {} };
+
+export function writeJar(path: string, key: Buffer, jar: Jar): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, seal(key, JSON.stringify(cookies)), { mode: 0o600 });
+  writeFileSync(path, seal(key, JSON.stringify(jar)), { mode: 0o600 });
   chmodSync(path, 0o600);
 }
 
-export function readJar(path: string, key: Buffer): StoredCookie[] {
-  if (!existsSync(path)) return [];
+export function readJar(path: string, key: Buffer): Jar {
+  if (!existsSync(path)) return { ...EMPTY_JAR };
   try {
     const parsed = JSON.parse(unseal(key, readFileSync(path, "utf8"))) as unknown;
-    return Array.isArray(parsed) ? (parsed as StoredCookie[]) : [];
+    if (Array.isArray(parsed)) return { version: 2, cookies: parsed as StoredCookie[], storage: {} };
+    const jar = parsed as Partial<Jar>;
+    return {
+      version: 2,
+      cookies: Array.isArray(jar.cookies) ? jar.cookies : [],
+      storage: typeof jar.storage === "object" && jar.storage ? jar.storage : {},
+    };
   } catch {
     // A jar sealed with a key we no longer have is not recoverable, and is not an error
     // worth crashing a daemon over — the persona is simply logged out.
-    return [];
+    return { ...EMPTY_JAR };
   }
 }

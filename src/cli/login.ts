@@ -5,6 +5,7 @@ import { createInterface } from "node:readline/promises";
 import { launchChrome } from "../chrome/launch.js";
 import { jarPath, loadManifest, saveManifest, type PersonaManifest } from "../personas/manifest.js";
 import { vaultKey, writeJar, type StoredCookie } from "../personas/vault.js";
+import { captureStorage } from "../personas/storage.js";
 
 /**
  * Log a persona in, once, by hand.
@@ -60,9 +61,11 @@ export async function loginPersona(options: LoginOptions): Promise<{ cookies: nu
 
     const result = await call("Storage.getCookies", {});
     const cookies = Array.isArray(result["cookies"]) ? (result["cookies"] as StoredCookie[]) : [];
+    // Web storage too: an OAuth login often leaves its token there and nothing in a cookie.
+    const storage = await captureStorage({ send: call }, [new URL(options.url).origin]).catch(() => ({}));
 
     const jar = jarPath(options.personasDir, options.name);
-    writeJar(jar, vaultKey(options.configDir), cookies);
+    writeJar(jar, vaultKey(options.configDir), { version: 2, cookies, storage });
 
     const existing = loadManifest(options.personasDir, options.name);
     const manifest: PersonaManifest = {

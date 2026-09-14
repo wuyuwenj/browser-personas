@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launchChrome, type LaunchedChrome } from "../chrome/launch.js";
 import { CdpClient } from "../cdp/client.js";
-import { jarPath, loadManifest, saveManifest, type PersonaManifest } from "./manifest.js";
+import { jarPath, loadManifest, normalizeOrigin, saveManifest, type PersonaManifest } from "./manifest.js";
 import { vaultKey, writeJar, type StoredCookie } from "./vault.js";
+import { captureStorage } from "./storage.js";
 
 /**
  * One interactive login, driven by polling rather than by a keypress.
@@ -40,6 +41,15 @@ export type LoginSessionOptions = {
   autofill?: { email?: string; password?: string };
 };
 
+function safePath(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname + parsed.search;
+  } catch {
+    return undefined;
+  }
+}
+
 export class LoginSession {
   readonly persona: string;
   readonly url: string;
@@ -52,6 +62,13 @@ export class LoginSession {
   #finished = false;
   #cookiesSaved: number | null = null;
   #error: string | null = null;
+  /**
+   * Every origin the human passed through. A login through Google or GitHub is a tour of
+   * two or three origins, and those are exactly the ones the app will redirect to again
+   * when the session expires — so they are learned here rather than guessed later.
+   */
+  #visited = new Set<string>();
+  #landedAt: string | null = null;
 
   private constructor(options: LoginSessionOptions, chrome: LaunchedChrome, cdp: CdpClient) {
     this.#options = options;
@@ -102,6 +119,8 @@ export class LoginSession {
         const info = await this.#cdp.send("Target.getTargetInfo", { targetId: this.#targetId ?? "" });
         const targetInfo = info["targetInfo"] as { url?: string } | undefined;
         currentUrl = targetInfo?.url ?? currentUrl;
+        const origin = normalizeOrigin(currentUrl);
+        if (/^https?:/.test(origin)) this.#visited.add(origin);
       } catch {
         /* the human may have closed the tab; the poll below still decides */
       }
@@ -112,10 +131,12 @@ export class LoginSession {
         // application itself answers whether they are enough.
         probeStatus = await this.#evaluateStatus(probe);
         signedIn = probeStatus !== null && probeStatus >= 200 && probeStatus < 300;
+        if (signedIn) this.#landedAt = currentUrl;
       } else {
         // With no probe, the honest signal is that the app moved the human off the page
         // it landed them on.
         signedIn = currentUrl !== this.#options.url && !/\/login\b/.test(currentUrl);
+        if (signedIn) this.#landedAt = currentUrl;
       }
     }
 
@@ -192,19 +213,40 @@ export class LoginSession {
   /** Save the jar and close the browser. The jar is the artifact; the profile is discarded. */
   async finish(extra: Partial<PersonaManifest> = {}): Promise<number> {
     try {
+      // Every cookie in the browser, not just the app's: an OAuth login leaves the
+      // provider's session behind too, and that is what makes a silent re-auth work.
       const result = await this.#cdp.send("Storage.getCookies", {});
       const cookies = Array.isArray(result["cookies"]) ? (result["cookies"] as StoredCookie[]) : [];
-      writeJar(
-        jarPath(this.#options.personasDir, this.persona),
-        vaultKey(this.#options.configDir),
+
+      const appOrigin = normalizeOrigin(this.#options.url);
+      const storage = await captureStorage(this.#cdp, [...new Set([appOrigin, ...this.#visited])]);
+
+      writeJar(jarPath(this.#options.personasDir, this.persona), vaultKey(this.#options.configDir), {
+        version: 2,
         cookies,
-      );
+        storage,
+      });
       this.#cookiesSaved = cookies.length;
 
       const existing = loadManifest(this.#options.personasDir, this.persona);
+      // Origins the identity provider used are remembered so the fence does not block a
+      // re-authentication later. They are learned from a real login, never guessed.
+      const authOrigins = [...new Set([...(existing?.auth_origins ?? []), ...this.#visited])].filter(
+        (origin) => origin !== appOrigin,
+      );
+      // With no probe configured, where the login actually landed is the best one there is.
+      const inferredProbe =
+        existing?.accounts?.[0]?.probe ??
+        (this.#landedAt ? safePath(this.#landedAt) : undefined);
+      const accounts = existing?.accounts?.length
+        ? [{ ...existing.accounts[0]!, probe: inferredProbe }, ...existing.accounts.slice(1)]
+        : [{ origin: appOrigin, probe: inferredProbe }];
+
       saveManifest(this.#options.personasDir, {
         name: this.persona,
         ...existing,
+        accounts,
+        ...(authOrigins.length ? { auth_origins: authOrigins } : {}),
         ...extra,
         seeded_by: existing?.seeded_by ?? process.env["USER"],
         seeded_at: existing?.seeded_at ?? new Date().toISOString().slice(0, 10),

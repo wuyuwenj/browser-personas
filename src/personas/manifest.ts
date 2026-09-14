@@ -41,6 +41,15 @@ export type PersonaManifest = {
    * what makes a staging persona unable to wander onto production.
    */
   origins?: string[];
+  /**
+   * Identity-provider origins, learned from a real login rather than configured.
+   *
+   * A persona fenced to its own app cannot complete a Google or Okta sign-in, and cannot
+   * re-authenticate when its session expires mid-run — the redirect to the provider is
+   * off the allowlist. These are the origins the app itself sent the human through, so
+   * allowing them grants nothing the app does not already do.
+   */
+  auth_origins?: string[];
   seeded_by?: string;
   seeded_at?: string;
 };
@@ -112,6 +121,14 @@ export function readNotes(personasDir: string, name: string, now = new Date()): 
  * something instead of being a label.
  */
 export function allowedOrigins(manifest: PersonaManifest): string[] {
+  const auth = (manifest.auth_origins ?? []).map(normalizeOrigin);
+  if (manifest.origins?.length) return [...new Set([...manifest.origins.map(normalizeOrigin), ...auth])];
+  const accounts = (manifest.accounts ?? []).map((a) => normalizeOrigin(a.origin));
+  return [...new Set([...accounts, ...auth])];
+}
+
+/** The origins the persona is really scoped to, ignoring the ones its login needed. */
+export function primaryOrigins(manifest: PersonaManifest): string[] {
   if (manifest.origins?.length) return manifest.origins.map(normalizeOrigin);
   return (manifest.accounts ?? []).map((a) => normalizeOrigin(a.origin));
 }
