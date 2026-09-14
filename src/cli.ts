@@ -38,6 +38,8 @@ const HELP = `browser-personas — one Chrome, many agents
   init --revert                        restore the agent configs init changed
   login NAME --url URL [--env staging] log a persona in once; the cookies persist
   personas                             list personas, their scope and login state
+  mcp [--persona NAME] [--owner ID]    run as an MCP server: chrome-devtools-mcp's tools,
+                                       plus the persona registry, on this proxy
   start [--port N] [--headed]          run the daemon in the foreground
   status [--port N]                    who holds which tabs
   stop [--config-dir DIR]              stop a running daemon
@@ -158,6 +160,44 @@ async function main(): Promise<number> {
         if (scope.length > 0) console.log(`    may reach: ${scope.join(", ")}`);
       }
       return 0;
+    }
+
+    case "mcp": {
+      const { startWrapper } = await import("./mcp/server.js");
+      const { createRequire } = await import("node:module");
+      const require = createRequire(import.meta.url);
+
+      const persona = typeof flags["persona"] === "string" ? flags["persona"] : "default";
+      // A stable owner id lets a reconnect reclaim this session's tabs. The controlling
+      // terminal is the most stable thing available that is also different per session.
+      const owner =
+        typeof flags["owner"] === "string"
+          ? flags["owner"]
+          : `mcp-${(process.env["TTY"] ?? String(process.ppid)).replace(/[^A-Za-z0-9]+/g, "-")}`;
+      const query = new URLSearchParams({ owner, persona });
+      const wsEndpoint = `ws://${host}:${port}/devtools/browser/bp?${query}`;
+
+      let upstreamBin: string;
+      try {
+        upstreamBin = require.resolve("chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js");
+      } catch {
+        console.error(
+          "chrome-devtools-mcp is not installed next to browser-personas.\n" +
+            "Install it (npm i -g chrome-devtools-mcp) or point your agent straight at\n" +
+            `  npx chrome-devtools-mcp@latest --wsEndpoint ${wsEndpoint}`,
+        );
+        return 1;
+      }
+
+      await startWrapper({
+        personasDir: personasDir(dir),
+        persona,
+        owner,
+        daemonUrl: `http://${host}:${port}`,
+        upstreamCommand: process.execPath,
+        upstreamArgs: [upstreamBin, "--wsEndpoint", wsEndpoint],
+      });
+      return -1;
     }
 
     case "status": {

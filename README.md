@@ -157,6 +157,47 @@ network log explains itself instead of looking like a flaky site.
 from one that writes, so it marks the request and the application decides. A proxy
 claiming to block writes it cannot identify would be a false guarantee.
 
+## Let the agent choose its own identity
+
+Run browser-personas as the MCP server and your agent gets chrome-devtools-mcp's whole
+toolset plus five persona tools. It can then read who is available and pick:
+
+```jsonc
+{ "mcpServers": { "browser": {
+    "command": "npx",
+    "args": ["browser-personas", "mcp", "--persona", "katy"]
+} } }
+```
+
+| Tool | What the agent uses it for |
+|---|---|
+| `list_personas` | who each identity is, what it may reach, who is holding it, and any notes |
+| `verify_persona` | "am I still signed in?" — fetches the probe page through that persona's cookies |
+| `note_persona` | leave a note for whoever uses it next; `ttl_hours` for anything about data state |
+| `add_persona` | register a new identity (it still needs a `login` run to get a session) |
+| `remove_persona` | delete one and shred its jar; refused while an agent holds it |
+
+There is also a `/personas` prompt that just prints the list.
+
+### Sharing a login
+
+Two agents on one non-exclusive persona are the same signed-in user. The first time an
+agent opens a page on a persona somebody else is holding, its result carries one extra
+line:
+
+> Shared login: 1 other agent (agent-1) holds "katy". Your tabs are yours, but every
+> action is attributed to the same signed-in user, and a sign-out by any of you signs out
+> all of you.
+
+Once, not on every call. Mark a persona `exclusive: true` to hand it to one agent at a
+time instead; the second gets a refusal naming the holder.
+
+## The dashboard
+
+The daemon serves one page at `http://127.0.0.1:9223/`: every persona with its scope and
+restrictions, every agent with its tabs, and a **watch** link per tab that opens Chrome's
+own DevTools against it without taking it from the agent.
+
 ## Commands
 
 ```
@@ -164,6 +205,7 @@ browser-personas init [--port N]      point agent configs at the proxy
 browser-personas init --revert        restore them
 browser-personas login NAME --url U   log a persona in once; the cookies persist
 browser-personas personas             list personas, their scope and restrictions
+browser-personas mcp [--persona NAME] run as an MCP server (tools + registry)
 browser-personas start [--headed]     run the daemon
 browser-personas status               who holds which tabs
 browser-personas stop
@@ -187,9 +229,10 @@ you, the same as it can read Chrome's. The isolation here is between well-behave
 
 ## Status
 
-v0.2: the proxy, tab ownership, and personas. A persona registry exposed to agents as MCP
-tools, so an agent can pick its own identity from a description, is v0.3. The full design
-is in [`docs/design.html`](docs/design.html).
+v0.3, feature-complete for the design in [`docs/design.html`](docs/design.html): the
+proxy, tab ownership, personas, the registry MCP, and the dashboard. Still ahead are
+per-owner audit logs and rate limits, `localStorage` persistence for apps that keep auth
+there, and Linux vault coverage.
 
 ## Development
 

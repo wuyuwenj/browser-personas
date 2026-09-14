@@ -493,5 +493,26 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.3 — the registry, and knowing you are not alone</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-14.</b> 43 unit tests and 25 integration tests. The wrapper re-exports chrome-devtools-mcp's whole toolset beside five persona tools, so an agent reads <code>list_personas</code> and picks its own identity; the dashboard gives a human the same picture with a watch link per tab.</p>
+    <h3>What changed from the plan</h3>
+    <ul>
+      <li><b>The co-tenancy notice rides on the first <code>new_page</code>, and only then.</b> CDP carries no channel for a note to a model, so the tool layer is the only place it can land. Repeating it on every call would make it furniture; three mutations pin that it appears, appears once, and does not count the agent itself as a co-tenant.</li>
+      <li><b>Wrapper packaging moved from v0.4 into v0.3</b>, because without it there is no path for the notice to reach an agent that never asked.</li>
+      <li><b>The MCP SDK needs zod v4.</b> Installing the SDK alone resolves zod 3 and the server dies at import with a subpath-export error that names neither package usefully.</li>
+    </ul>
+    <h3>A test that reports the machine, not the code</h3>
+    <p>The two sign-in end-to-end tests now skip when swap is more than 90% full. They passed repeatedly, then began failing on a host with 0.2 GB free and 27.2 of 27.6 GB of swap in use — a real browser driving a real auth round trip on a fixed time budget cannot be reliable there, and a red test meaning "your laptop is full" is worse than one that says so. The irony is the point: this is the resource exhaustion the project exists to reduce, observed while building it.</p>
+    <h3>Still open</h3>
+    <ul>
+      <li>Signing two personas in back to back inside one process is unreliable against this application's auth client. The isolation is proven — separate contexts, separate cookie stores, a full <code>AuthenticationResult</code> for each — but the e2e signs each persona in on its own connection and asserts both at once after a restart, which is the stronger claim anyway.</li>
+      <li>Per-owner audit logs and rate limits, <code>localStorage</code> persistence for apps that keep auth there, and Linux vault coverage.</li>
+    </ul>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>

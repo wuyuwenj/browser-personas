@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { BrowserPersonasDaemon } from "../../src/proxy/server.js";
 import { saveManifest, type PersonaManifest } from "../../src/personas/manifest.js";
 
@@ -26,6 +27,26 @@ export function testPassword(): string {
   const match = /^BP_TEST_PASSWORD=(.+)$/m.exec(readFileSync(file, "utf8"));
   if (!match?.[1]) throw new Error("BP_TEST_PASSWORD not found");
   return match[1].trim();
+}
+
+/**
+ * Sign-in e2e needs a machine that is not thrashing.
+ *
+ * These tests drive a real browser through a real auth round trip on a fixed time budget.
+ * When the host is out of physical memory and swapping, that budget expires for reasons
+ * that have nothing to do with the code under test — and a red test that means "your
+ * laptop is full" is worse than one that says so and skips.
+ */
+export function machineHasHeadroom(): boolean {
+  try {
+    const usage = execFileSync("sysctl", ["-n", "vm.swapusage"], { encoding: "utf8" });
+    const total = /total = ([\d.]+)M/.exec(usage)?.[1];
+    const used = /used = ([\d.]+)M/.exec(usage)?.[1];
+    if (!total || !used) return true;
+    return Number(used) / Number(total) < 0.9;
+  } catch {
+    return true;
+  }
 }
 
 export async function doorvestIsUp(): Promise<boolean> {

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 
@@ -26,9 +27,43 @@ export class McpClient {
     return require.resolve("chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js");
   }
 
-  static async start(args: string[]): Promise<McpClient> {
-    const proc = spawn(process.execPath, [McpClient.binPath(), ...args], {
+  /**
+   * Start the browser-personas wrapper itself, which is what an agent actually connects
+   * to: chrome-devtools-mcp's tools re-exported, plus the persona registry.
+   */
+  static async startWrapper(options: {
+    daemonPort: number;
+    personasDir: string;
+    persona: string;
+    owner: string;
+  }): Promise<McpClient> {
+    const cli = require.resolve("../../src/cli.ts");
+    return McpClient.start(
+      [
+        "mcp",
+        "--port",
+        String(options.daemonPort),
+        "--persona",
+        options.persona,
+        "--owner",
+        options.owner,
+      ],
+      { entry: cli, env: { BROWSER_PERSONAS_CONFIG_DIR: join(options.personasDir, "..") } },
+    );
+  }
+
+  static async start(
+    args: string[],
+    options: { entry?: string; env?: Record<string, string> } = {},
+  ): Promise<McpClient> {
+    const entry = options.entry ?? McpClient.binPath();
+    // The CLI is TypeScript in this repo, so it runs through tsx when it is the entry.
+    const argv = entry.endsWith(".ts")
+      ? [require.resolve("tsx/cli"), entry, ...args]
+      : [entry, ...args];
+    const proc = spawn(process.execPath, argv, {
       stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, ...options.env },
     });
     const client = new McpClient(proc);
     await client.request("initialize", {

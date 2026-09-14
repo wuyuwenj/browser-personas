@@ -8,6 +8,8 @@ import type { PipeTransport } from "../cdp/pipeTransport.js";
 import { OwnershipRegistry, type OwnerId, type OwnershipOptions } from "./ownership.js";
 import { PersonaManager } from "./personaManager.js";
 import { blockedBody, checkRequest, policyHeaders } from "../personas/policy.js";
+import { renderDashboard } from "../dashboard/render.js";
+import type { DaemonStatus } from "./status.js";
 import {
   CDP_SERVER_ERROR,
   decideInbound,
@@ -696,21 +698,61 @@ export class BrowserPersonasDaemon {
       return;
     }
 
-    if (endpoint === "/status" || endpoint === "/") {
-      json({
-        port: this.port,
-        personas: [...new Set(this.registry.owners().map((o) => o.persona))],
-        owners: this.registry.owners().map((o) => ({
-          id: o.id,
-          persona: o.persona,
-          connected: o.connected,
-          tabs: this.registry.targetsOf(o.id).map((t) => ({ id: t.targetId, url: t.url })),
-        })),
-      });
+    if (endpoint === "/status") {
+      json(this.status());
+      return;
+    }
+
+    if (endpoint === "/" || endpoint === "/dashboard") {
+      res.writeHead(200, { "content-type": "text/html; charset=UTF-8" });
+      res.end(renderDashboard(this.status(), this.options.host, this.port));
       return;
     }
 
     json({ error: `unknown endpoint ${endpoint}` }, 404);
+  }
+
+  /** Everything the dashboard and the registry MCP read. One shape, one source. */
+  status(): DaemonStatus {
+    const personaNames = new Set<string>([
+      ...this.#personas.names(),
+      ...this.registry.owners().map((o) => o.persona),
+    ]);
+    return {
+      port: this.port,
+      chromeAlive: this.#chrome?.process.exitCode === null,
+      personas: [...personaNames].sort().map((name) => {
+        const manifest = this.#personas.manifest(name);
+        return {
+          name,
+          description: manifest?.description,
+          env: manifest?.env,
+          exclusive: Boolean(manifest?.exclusive),
+          readOnly: manifest?.read_only ?? false,
+          origins: this.#personas.origins(name),
+          accounts: (manifest?.accounts ?? []).map((a) => ({
+            origin: a.origin,
+            username: a.username,
+            role: a.role,
+          })),
+          leaseHolder: this.#personas.leaseHolder(name),
+          holders: this.registry.holdersOf(name).map((o) => ({
+            owner: o.id,
+            tabs: this.registry.pageCount(o.id),
+            since: new Date(o.connectedAt).toISOString(),
+          })),
+        };
+      }),
+      owners: this.registry.owners().map((o) => ({
+        id: o.id,
+        persona: o.persona,
+        connected: o.connected,
+        tabs: this.registry
+          .targetsOf(o.id)
+          .filter((t) => t.type === "page")
+          .map((t) => ({ id: t.targetId, url: t.url })),
+      })),
+    };
   }
 
   // ---- housekeeping -------------------------------------------------------
@@ -780,3 +822,4 @@ export function createDaemon(options: DaemonOptions): BrowserPersonasDaemon {
 }
 
 export { CDP_SERVER_ERROR };
+export type { DaemonStatus } from "./status.js";
