@@ -514,5 +514,28 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.4 — the console</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-14.</b> 53 unit tests and 33 integration tests. §9 said not to build a web form for personas, and that was wrong about the half that mattered: editing a manifest is five fields in a file, but the login flow needed a terminal, a second browser, and a keypress at the right moment, with no signal when the target was not even running.</p>
+    <h3>What the page owns</h3>
+    <ul>
+      <li><b>Login by polling, not by a keypress.</b> The old flow asked the human to press Enter when done, which is a claim the tool cannot check. The session now asks the application, through the cookies the login is producing, so the green dot is the app's answer rather than the user's.</li>
+      <li><b>Passwords, opt-in.</b> A jar holds a session that expires; a password does not. Stored with the same key, never rendered back, never returned by an endpoint, never in a tool result — and off unless asked for.</li>
+      <li><b>Create, edit, delete</b>, with delete refused while an agent holds the persona.</li>
+    </ul>
+    <h3>Three guards a write surface needs that a read surface does not</h3>
+    <p>A token minted per daemon and carried in the link; a loopback <code>Host</code>, which is what DNS rebinding controls and a browser cannot forge; and JSON on any write with a body, which a cross-site form cannot send. The CDP endpoints stay ungated — chrome-devtools-mcp has nowhere to put a token, and they expose no credentials. All five guards are mutation-verified.</p>
+    <h3>Three defects the tests caught</h3>
+    <ul>
+      <li><b>A bodyless DELETE cannot carry a content type</b>, so requiring JSON on every write made the console's own delete button unusable. The rule now applies only when a body is present; a bodyless cross-site write is still stopped by the Origin check and by a preflight no form can avoid.</li>
+      <li><b>An edited manifest never reached the copy the daemon serves from</b>, so a change took effect only after a restart.</li>
+      <li><b>Gating <code>/status</code> broke the registry MCP</b>, which reads it. It runs as the same user, so it reads the token file rather than being handed one.</li>
+      <li><b>Node's <code>fetch</code> silently drops a <code>Host</code> override</b>, so the rebinding test passed for the wrong reason until it was rewritten as a raw request. A guard test that cannot send the attack is not a test.</li>
+    </ul>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>

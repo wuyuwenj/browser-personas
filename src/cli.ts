@@ -38,6 +38,7 @@ const HELP = `browser-personas — one Chrome, many agents
   init --revert                        restore the agent configs init changed
   login NAME --url URL [--env staging] log a persona in once; the cookies persist
   personas                             list personas, their scope and login state
+  console                              print the local console link (token included)
   mcp [--persona NAME] [--owner ID]    run as an MCP server: chrome-devtools-mcp's tools,
                                        plus the persona registry, on this proxy
   start [--port N] [--headed]          run the daemon in the foreground
@@ -111,6 +112,7 @@ async function main(): Promise<number> {
       await daemon.start();
       console.log(`browser-personas listening on http://${host}:${daemon.port}`);
       console.log(`point a client at it:  --browserUrl=${proxyUrl(daemon.port)}`);
+      console.log(`console:               ${daemon.consoleUrl()}`);
       return -1; // stay in the foreground
     }
 
@@ -191,6 +193,7 @@ async function main(): Promise<number> {
 
       await startWrapper({
         personasDir: personasDir(dir),
+        configDir: configDir(dir),
         persona,
         owner,
         daemonUrl: `http://${host}:${port}`,
@@ -198,6 +201,24 @@ async function main(): Promise<number> {
         upstreamArgs: [upstreamBin, "--wsEndpoint", wsEndpoint],
       });
       return -1;
+    }
+
+    case "console": {
+      const { readFileSync, existsSync } = await import("node:fs");
+      const tokenFile = join(runtimeDir(dir), "run", "console.token");
+      const legacy = join(runtimeDir(dir), "console.token");
+      const file = existsSync(tokenFile) ? tokenFile : legacy;
+      if (!existsSync(file)) {
+        console.error("No console token yet. Start the daemon first: browser-personas start");
+        return 1;
+      }
+      const url = `http://${host}:${port}/?t=${readFileSync(file, "utf8").trim()}`;
+      console.log(url);
+      if (flags["open"]) {
+        const { spawn } = await import("node:child_process");
+        spawn(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore" }).unref();
+      }
+      return 0;
     }
 
     case "status": {

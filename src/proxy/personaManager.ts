@@ -57,6 +57,12 @@ export class PersonaManager {
       .map((e) => e.name);
   }
 
+  /** Re-read a persona's manifest into its live context, so an edit takes effect at once. */
+  refresh(name: string): void {
+    const ctx = this.#contexts.get(name);
+    if (ctx) ctx.manifest = loadManifest(this.#personasDir, name);
+  }
+
   manifest(name: string): PersonaManifest | null {
     return this.#contexts.get(name)?.manifest ?? loadManifest(this.#personasDir, name);
   }

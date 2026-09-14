@@ -18,6 +18,8 @@ import {
   type RegistryDeps,
   type ToolText,
 } from "./registryTools.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { DaemonStatus } from "../proxy/status.js";
 
 const REGISTRY_TOOLS = [
@@ -89,6 +91,7 @@ const REGISTRY_TOOLS = [
 
 export type WrapperOptions = {
   personasDir: string;
+  configDir: string;
   persona: string;
   owner: string;
   daemonUrl: string;
@@ -96,9 +99,26 @@ export type WrapperOptions = {
   upstreamArgs: string[];
 };
 
-async function fetchStatus(daemonUrl: string): Promise<DaemonStatus | null> {
+/**
+ * The daemon's state endpoint is token-gated, because the console writes credentials
+ * through the same surface. This server runs as the same user on the same machine, so it
+ * reads the token from the config directory rather than being handed one.
+ */
+function consoleToken(configDir: string): string | null {
   try {
-    const res = await fetch(`${daemonUrl}/status`, { signal: AbortSignal.timeout(4_000) });
+    return readFileSync(join(configDir, "run", "console.token"), "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchStatus(daemonUrl: string, configDir: string): Promise<DaemonStatus | null> {
+  const token = consoleToken(configDir);
+  try {
+    const res = await fetch(`${daemonUrl}/status`, {
+      signal: AbortSignal.timeout(4_000),
+      headers: token ? { "x-console-token": token } : {},
+    });
     if (!res.ok) return null;
     return (await res.json()) as DaemonStatus;
   } catch {
@@ -118,7 +138,7 @@ export async function startWrapper(options: WrapperOptions): Promise<void> {
   const deps: RegistryDeps = {
     personasDir: options.personasDir,
     owner: options.owner,
-    status: () => fetchStatus(options.daemonUrl),
+    status: () => fetchStatus(options.daemonUrl, options.configDir),
     probe: async (url) => {
       const result = (await upstream
         .request("tools/call", { name: "new_page", arguments: { url } })

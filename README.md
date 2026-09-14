@@ -192,11 +192,45 @@ line:
 Once, not on every call. Mark a persona `exclusive: true` to hand it to one agent at a
 time instead; the second gets a refusal naming the holder.
 
-## The dashboard
+## The console
 
-The daemon serves one page at `http://127.0.0.1:9223/`: every persona with its scope and
-restrictions, every agent with its tabs, and a **watch** link per tab that opens Chrome's
-own DevTools against it without taking it from the agent.
+```bash
+browser-personas console --open
+```
+
+One page, printed with its token when the daemon starts. From it you can:
+
+- **Add a persona** — name, app URL, username, the path that proves you are signed in,
+  environment, read-only level, and whether it is exclusive.
+- **Log in.** Press the button, a browser window opens, you sign in. The page polls your
+  app through the very cookies the login is producing, so the green dot means the
+  application said yes, not that you said you were done. Then **Save this login**.
+- **Watch a tab.** Every agent's tabs are listed with a link that opens Chrome's own
+  DevTools against one, without taking it from the agent.
+- **Edit or delete.** Deleting is refused while an agent holds the persona, naming them.
+
+The CLI still does all of it, unchanged, because scripts and CI need it.
+
+### Passwords
+
+Storing one is optional and off by default. A cookie jar holds a session that expires; a
+password does not, so the same file gains a much longer blast radius. What it buys is the
+**Fill the form** button and automatic re-login when a session dies, which matters for
+long unattended runs and little else. The default stays `password_ref`, a pointer to
+wherever your team already keeps passwords. A stored password is encrypted with the same
+key as the jars and is never rendered back to the page, returned by any endpoint, or put
+in a tool result.
+
+### Why the console is token-gated
+
+Reading state over loopback is harmless. Writing credentials over loopback is not: any
+page on the internet can make a visitor's browser POST to 127.0.0.1, and any process on
+your machine can reach the port. So the console and its API need a token (minted per
+daemon, kept `0600`, carried in the link), a loopback `Host` — which kills DNS
+rebinding — and JSON for any write that has a body, which a cross-site form cannot send.
+
+The CDP endpoints stay open exactly as before. `chrome-devtools-mcp` has nowhere to put a
+token, and they expose no credentials.
 
 ## Commands
 
@@ -205,6 +239,7 @@ browser-personas init [--port N]      point agent configs at the proxy
 browser-personas init --revert        restore them
 browser-personas login NAME --url U   log a persona in once; the cookies persist
 browser-personas personas             list personas, their scope and restrictions
+browser-personas console [--open]     print (or open) the local console link
 browser-personas mcp [--persona NAME] run as an MCP server (tools + registry)
 browser-personas start [--headed]     run the daemon
 browser-personas status               who holds which tabs
@@ -229,10 +264,10 @@ you, the same as it can read Chrome's. The isolation here is between well-behave
 
 ## Status
 
-v0.3, feature-complete for the design in [`docs/design.html`](docs/design.html): the
-proxy, tab ownership, personas, the registry MCP, and the dashboard. Still ahead are
-per-owner audit logs and rate limits, `localStorage` persistence for apps that keep auth
-there, and Linux vault coverage.
+v0.4: the proxy, tab ownership, personas, the registry MCP, and the console. Still ahead
+are per-owner audit logs and rate limits, `localStorage` persistence for apps that keep
+auth there, and Linux vault coverage. The design and a per-milestone record of what the
+real browser taught us are in [`docs/design.html`](docs/design.html).
 
 ## Development
 

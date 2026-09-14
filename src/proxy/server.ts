@@ -8,7 +8,13 @@ import type { PipeTransport } from "../cdp/pipeTransport.js";
 import { OwnershipRegistry, type OwnerId, type OwnershipOptions } from "./ownership.js";
 import { PersonaManager } from "./personaManager.js";
 import { blockedBody, checkRequest, policyHeaders } from "../personas/policy.js";
-import { renderDashboard } from "../dashboard/render.js";
+import { renderConsole } from "../dashboard/render.js";
+import { checkConsoleRequest, loadOrCreateToken } from "../dashboard/guards.js";
+import { handleApi } from "../dashboard/api.js";
+import { LoginSession, type LoginState } from "../personas/loginSession.js";
+import { readSecret } from "../personas/secrets.js";
+import { loadManifest } from "../personas/manifest.js";
+import { vaultKey } from "../personas/vault.js";
 import type { DaemonStatus } from "./status.js";
 import {
   CDP_SERVER_ERROR,
@@ -81,8 +87,12 @@ export class BrowserPersonasDaemon {
   #createTimer: NodeJS.Timeout | null = null;
   #sweep: NodeJS.Timeout | null = null;
   #now: () => number;
+  #personasDir!: string;
+  #configDir!: string;
   #started = false;
   #personas: PersonaManager;
+  #consoleToken: string;
+  #logins = new Map<string, LoginSession>();
   /** Sessions the proxy has taken over request interception on, for a restricted persona. */
   #intercepted = new Set<string>();
 
@@ -90,11 +100,14 @@ export class BrowserPersonasDaemon {
     this.options = options;
     this.#now = options.now ?? (() => Date.now());
     this.registry = new OwnershipRegistry(options.ownership);
+    this.#personasDir = options.personasDir ?? join(options.userDataDir, "..", "personas");
+    this.#configDir = options.configDir ?? join(options.userDataDir, "..");
     this.#personas = new PersonaManager(
-      options.personasDir ?? join(options.userDataDir, "..", "personas"),
-      options.configDir ?? join(options.userDataDir, ".."),
+      this.#personasDir,
+      this.#configDir,
       { call: (method, params) => this.#callUpstream(method, params ?? {}) },
     );
+    this.#consoleToken = loadOrCreateToken(join(this.#configDir, "run", "console.token"));
     this.#http = createServer((req, res) => void this.#onHttp(req, res));
     this.#wss = new WebSocketServer({ noServer: true });
     this.#http.on("upgrade", (req, socket, head) => {
@@ -104,6 +117,61 @@ export class BrowserPersonasDaemon {
 
   get personas(): PersonaManager {
     return this.#personas;
+  }
+
+  /** The console link, token and all. Printed by `start`, never logged elsewhere. */
+  consoleUrl(): string {
+    return `http://${this.options.host}:${this.port}/?t=${this.#consoleToken}`;
+  }
+
+  // ---- login sessions -----------------------------------------------------
+
+  async startLogin(persona: string): Promise<LoginState> {
+    await this.#logins.get(persona)?.close().catch(() => undefined);
+    const manifest = loadManifest(this.#personasDir, persona);
+    const account = manifest?.accounts?.[0];
+    if (!account?.origin) throw new Error(`Persona "${persona}" has no origin to log in to.`);
+
+    const password = readSecret(this.#personasDir, persona, vaultKey(this.#configDir));
+    const session = await LoginSession.start({
+      personasDir: this.#personasDir,
+      configDir: this.#configDir,
+      persona,
+      url: account.origin,
+      probe: account.probe,
+      ...(password && account.username
+        ? { autofill: { email: account.username, password } }
+        : {}),
+    });
+    this.#logins.set(persona, session);
+    return session.state();
+  }
+
+  async loginStates(): Promise<LoginState[]> {
+    return Promise.all([...this.#logins.values()].map((s) => s.state()));
+  }
+
+  async autofillLogin(persona: string): Promise<boolean> {
+    return (await this.#logins.get(persona)?.autofill()) ?? false;
+  }
+
+  async finishLogin(persona: string): Promise<LoginState> {
+    const session = this.#logins.get(persona);
+    if (!session) throw new Error(`No login in progress for "${persona}".`);
+    await session.finish();
+    const state = await session.state();
+    this.#logins.delete(persona);
+    // The daemon's own context picks up the new jar without a restart.
+    await this.#personas.ensure(persona).catch(() => undefined);
+    await this.#personas.restore(persona).catch(() => undefined);
+    return state;
+  }
+
+  async cancelLogin(persona: string): Promise<void> {
+    const session = this.#logins.get(persona);
+    if (!session) return;
+    this.#logins.delete(persona);
+    await session.close().catch(() => undefined);
   }
 
   get port(): number {
@@ -147,6 +215,8 @@ export class BrowserPersonasDaemon {
 
   async stop(): Promise<void> {
     if (this.#sweep) clearInterval(this.#sweep);
+    for (const session of this.#logins.values()) await session.close().catch(() => undefined);
+    this.#logins.clear();
     await this.#personas.persistAll().catch(() => undefined);
     for (const client of this.#clients.values()) client.ws.close(1001, "daemon stopping");
     this.#clients.clear();
@@ -698,21 +768,75 @@ export class BrowserPersonasDaemon {
       return;
     }
 
-    if (endpoint === "/status") {
-      json(this.status());
-      return;
-    }
+    if (endpoint === "/status" || endpoint === "/" || endpoint === "/dashboard" || endpoint.startsWith("/api/")) {
+      const guard = checkConsoleRequest(this.#consoleToken, this.port, {
+        method: req.method ?? "GET",
+        host: req.headers.host,
+        origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+        contentType: typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : undefined,
+        hasBody:
+          req.headers["transfer-encoding"] !== undefined ||
+          Number(req.headers["content-length"] ?? 0) > 0,
+        token:
+          url.searchParams.get("t") ??
+          (typeof req.headers["x-console-token"] === "string" ? req.headers["x-console-token"] : null),
+      });
+      if (!guard.ok) {
+        json({ error: guard.reason }, guard.status);
+        return;
+      }
 
-    if (endpoint === "/" || endpoint === "/dashboard") {
+      if (endpoint === "/status") {
+        json(this.status());
+        return;
+      }
+
+      if (endpoint.startsWith("/api/")) {
+        const raw = await readBody(req);
+        let parsed: Record<string, unknown> = {};
+        if (raw) {
+          try {
+            parsed = JSON.parse(raw) as Record<string, unknown>;
+          } catch {
+            json({ error: "Body must be JSON." }, 400);
+            return;
+          }
+        }
+        try {
+          const result = await handleApi(this.#apiDeps(), req.method ?? "GET", endpoint, parsed);
+          json(result.body, result.status);
+        } catch (err) {
+          json({ error: err instanceof Error ? err.message : String(err) }, 500);
+        }
+        return;
+      }
+
       res.writeHead(200, { "content-type": "text/html; charset=UTF-8" });
-      res.end(renderDashboard(this.status(), this.options.host, this.port));
+      res.end(renderConsole(this.status(), this.options.host, this.port, this.#consoleToken));
       return;
     }
 
     json({ error: `unknown endpoint ${endpoint}` }, 404);
   }
 
-  /** Everything the dashboard and the registry MCP read. One shape, one source. */
+  #apiDeps() {
+    return {
+      personasDir: this.#personasDir,
+      vaultKey: () => vaultKey(this.#configDir),
+      status: () => this.status(),
+      loginStates: () => this.loginStates(),
+      startLogin: (persona: string) => this.startLogin(persona),
+      finishLogin: (persona: string) => this.finishLogin(persona),
+      cancelLogin: (persona: string) => this.cancelLogin(persona),
+      autofillLogin: (persona: string) => this.autofillLogin(persona),
+      reloadPersona: (persona: string) => {
+        this.#personas.refresh(persona);
+        void this.#personas.ensure(persona).catch(() => undefined);
+      },
+    };
+  }
+
+  /** Everything the console and the registry MCP read. One shape, one source. */
   status(): DaemonStatus {
     const personaNames = new Set<string>([
       ...this.#personas.names(),
@@ -797,6 +921,18 @@ export class BrowserPersonasDaemon {
     }
     this.#clients.clear();
   }
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    let body = "";
+    req.on("data", (chunk: Buffer) => {
+      // A console request has no business being large; refuse to buffer more than 64 KB.
+      if (body.length < 65_536) body += chunk.toString("utf8");
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", () => resolve(""));
+  });
 }
 
 // ---- path parsing ---------------------------------------------------------
