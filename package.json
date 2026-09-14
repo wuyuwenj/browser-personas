@@ -1,6 +1,6 @@
 {
   "name": "browser-personas",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "One Chrome, many agents: a CDP proxy that gives every agent its own logged-in identity and its own tabs.",
   "type": "module",
   "license": "MIT",
@@ -43,17 +43,18 @@
     "test:matrix": "node scripts/matrix.mjs"
   },
   "dependencies": {
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",
+    "chrome-devtools-mcp": "1.9.0",
     "eslint": "^9.17.0",
     "puppeteer-core": "^23.10.0",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8",
-    "chrome-devtools-mcp": "1.9.0"
+    "vitest": "^2.1.8"
   }
 }

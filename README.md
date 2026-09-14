@@ -88,11 +88,82 @@ npx chrome-devtools-mcp@latest \
 Puppeteer resolves `/json/version` as an absolute path against `browserURL`, which
 discards any path or query you put there. A websocket endpoint is passed through verbatim.
 
+## Personas: one browser, several logins
+
+A persona is a named identity inside the same Chrome — its own cookie store, and a cookie
+jar on disk so the login survives a restart. This is the part `--isolated` cannot do.
+
+```bash
+npx browser-personas login katy --url https://your-app.example --env staging
+# a browser window opens. Log in once — captcha and all — then press Enter.
+```
+
+Point an agent at it, and every tab it opens carries that login:
+
+```bash
+npx chrome-devtools-mcp@latest \
+  --wsEndpoint "ws://127.0.0.1:9223/devtools/browser/bp?owner=agent-1&persona=katy"
+```
+
+Two agents on two personas are two different signed-in users in one browser process. Both
+survive `browser-personas stop` and a restart.
+
+`browser-personas personas` lists them with their scope and restrictions.
+
+### The manifest
+
+`~/.config/browser-personas/personas/katy/manifest.yaml` says what the persona is. It
+never holds a password — `password_ref` points at wherever your team keeps those.
+
+```yaml
+name: katy
+description: "Owner with an active renewal. Owner-facing flows only."
+env: staging
+exclusive: false            # true hands it to one agent at a time
+read_only: false            # false | strict | inspect | cooperative
+accounts:
+  - origin: https://stage.your-app.example
+    username: katy@example.com
+    role: homeowner
+    probe: /messages        # 200 here means still logged in
+    password_ref: "1password://Team/stage-katy"
+```
+
+Cookie jars are AES-256-GCM with the key in the macOS Keychain (a `0600` file elsewhere),
+matching what Chrome does with its own cookie database. No command ever prints a cookie.
+
+### Fences
+
+**`accounts[].origin` is an allowlist for navigation.** A staging persona cannot be
+navigated to production — the proxy answers the navigation itself, so no request leaves
+the machine. It applies to top-level document loads only: enforcing it on subresources
+would block the app's own auth provider, CDN and fonts, and would stop the app working
+without stopping an agent going anywhere.
+
+**`read_only` has three levels, because "GET only" is wrong for most apps.** Every Next.js
+server action is a POST, and so is every GraphQL query, so a method-only rule would load a
+page shell and nothing inside it.
+
+| Level | Allows | Fits |
+|---|---|---|
+| `strict` | GET, HEAD, OPTIONS | a site you do not control |
+| `inspect` | plus POSTs whose body reads (GraphQL `query`, not `mutation`) | GraphQL apps |
+| `cooperative` | plus any POST, stamped `X-Read-Only: 1` | server-action apps, where only the app knows |
+
+A blocked request is answered with a 403 whose body names the policy, so the agent's
+network log explains itself instead of looking like a flaky site.
+
+`cooperative` is deliberately honest: the proxy cannot tell a server action that reads
+from one that writes, so it marks the request and the application decides. A proxy
+claiming to block writes it cannot identify would be a false guarantee.
+
 ## Commands
 
 ```
 browser-personas init [--port N]      point agent configs at the proxy
 browser-personas init --revert        restore them
+browser-personas login NAME --url U   log a persona in once; the cookies persist
+browser-personas personas             list personas, their scope and restrictions
 browser-personas start [--headed]     run the daemon
 browser-personas status               who holds which tabs
 browser-personas stop
@@ -116,8 +187,9 @@ you, the same as it can read Chrome's. The isolation here is between well-behave
 
 ## Status
 
-v0.1: the proxy and tab ownership. Personas — a named, persistent, per-agent login inside
-the same browser — are v0.2. The full design is in [`docs/design.html`](docs/design.html).
+v0.2: the proxy, tab ownership, and personas. A persona registry exposed to agents as MCP
+tools, so an agent can pick its own identity from a description, is v0.3. The full design
+is in [`docs/design.html`](docs/design.html).
 
 ## Development
 

@@ -1,10 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { LaunchedChrome } from "../chrome/launch.js";
 import { launchChrome } from "../chrome/launch.js";
 import type { PipeTransport } from "../cdp/pipeTransport.js";
 import { OwnershipRegistry, type OwnerId, type OwnershipOptions } from "./ownership.js";
+import { PersonaManager } from "./personaManager.js";
+import { blockedBody, checkRequest, policyHeaders } from "../personas/policy.js";
 import {
   CDP_SERVER_ERROR,
   decideInbound,
@@ -19,6 +22,9 @@ export type DaemonOptions = {
   port: number;
   host: string;
   userDataDir: string;
+  /** Where persona directories live. Omit and the daemon runs with the default persona only. */
+  personasDir?: string;
+  configDir?: string;
   chromePath?: string;
   headless?: boolean;
   ownership?: Partial<OwnershipOptions>;
@@ -34,6 +40,9 @@ type ClientConn = {
   ws: WebSocket;
   /** Clients that asked Chrome to pause new targets until they say go. */
   waitsForDebugger: boolean;
+  /** Commands that arrived before the persona's browser context existed. */
+  pending: string[];
+  contextReady: boolean;
 };
 
 type Inflight = {
@@ -71,16 +80,28 @@ export class BrowserPersonasDaemon {
   #sweep: NodeJS.Timeout | null = null;
   #now: () => number;
   #started = false;
+  #personas: PersonaManager;
+  /** Sessions the proxy has taken over request interception on, for a restricted persona. */
+  #intercepted = new Set<string>();
 
   constructor(options: DaemonOptions) {
     this.options = options;
     this.#now = options.now ?? (() => Date.now());
     this.registry = new OwnershipRegistry(options.ownership);
+    this.#personas = new PersonaManager(
+      options.personasDir ?? join(options.userDataDir, "..", "personas"),
+      options.configDir ?? join(options.userDataDir, ".."),
+      { call: (method, params) => this.#callUpstream(method, params ?? {}) },
+    );
     this.#http = createServer((req, res) => void this.#onHttp(req, res));
     this.#wss = new WebSocketServer({ noServer: true });
     this.#http.on("upgrade", (req, socket, head) => {
       this.#wss.handleUpgrade(req, socket as never, head, (ws) => this.#onClient(ws, req));
     });
+  }
+
+  get personas(): PersonaManager {
+    return this.#personas;
   }
 
   get port(): number {
@@ -105,6 +126,12 @@ export class BrowserPersonasDaemon {
     // and the first agent to connect would inherit them.
     await this.#callUpstream("Target.setDiscoverTargets", { discover: true });
 
+    // Personas are human-curated, so the set is known at start. Creating their contexts
+    // up front means a connecting client never waits on one.
+    for (const name of this.#personas.names()) {
+      await this.#personas.ensure(name).catch(() => undefined);
+    }
+
     await new Promise<void>((resolve) => {
       this.#http.listen(this.options.port, this.options.host, resolve);
     });
@@ -118,6 +145,7 @@ export class BrowserPersonasDaemon {
 
   async stop(): Promise<void> {
     if (this.#sweep) clearInterval(this.#sweep);
+    await this.#personas.persistAll().catch(() => undefined);
     for (const client of this.#clients.values()) client.ws.close(1001, "daemon stopping");
     this.#clients.clear();
     await new Promise<void>((resolve) => this.#wss.close(() => resolve()));
@@ -249,6 +277,71 @@ export class BrowserPersonasDaemon {
     if (next) next();
   }
 
+  #personaOf(ownerId: OwnerId): string | null {
+    return this.registry.owner(ownerId)?.persona ?? null;
+  }
+
+  /**
+   * Take over requests on one page session.
+   *
+   * `Fetch` is paused at the Request stage so the method, URL and body are all visible
+   * before anything leaves Chrome, and service workers are bypassed because requests they
+   * issue never surface as `Fetch.requestPaused` and would otherwise walk straight past
+   * the policy.
+   */
+  #beginInterception(sessionId: string): void {
+    if (this.#intercepted.has(sessionId)) return;
+    this.#intercepted.add(sessionId);
+    this.#sendUpstreamOnSession("Network.setBypassServiceWorker", sessionId, { bypass: true });
+    this.#sendUpstreamOnSession("Fetch.enable", sessionId, {
+      patterns: [{ urlPattern: "*", requestStage: "Request" }],
+    });
+  }
+
+  #handleInterceptedRequest(sessionId: string, params: Record<string, unknown>): void {
+    const requestId = params["requestId"];
+    const request = (params["request"] as Record<string, unknown>) ?? {};
+    if (typeof requestId !== "string") return;
+
+    const url = String(request["url"] ?? "");
+    const httpMethod = String(request["method"] ?? "GET");
+    const body = typeof request["postData"] === "string" ? (request["postData"] as string) : undefined;
+    const isNavigation = String(params["resourceType"] ?? "") === "Document";
+
+    const ownerId = this.registry.ownerOfSession(sessionId);
+    const persona = ownerId ? this.#personaOf(ownerId) : null;
+    const manifest = persona ? this.#personas.manifest(persona) : null;
+
+    const verdict = checkRequest(manifest, { method: httpMethod, url, body, isNavigation });
+    if (verdict.allowed) {
+      const extra = policyHeaders(manifest);
+      const headers = Object.entries({
+        ...Object.fromEntries(
+          Object.entries((request["headers"] as Record<string, string>) ?? {}).map(([k, v]) => [k, String(v)]),
+        ),
+        ...extra,
+      }).map(([name, value]) => ({ name, value }));
+      this.#sendUpstreamOnSession("Fetch.continueRequest", sessionId, {
+        requestId,
+        ...(Object.keys(extra).length > 0 ? { headers } : {}),
+      });
+      return;
+    }
+
+    // Answered, not failed. A network error reads to an agent as a flaky site; a 403 whose
+    // body names the policy tells it exactly why, and it stops retrying.
+    const payload = blockedBody(verdict.reason ?? "refused by policy");
+    this.#sendUpstreamOnSession("Fetch.fulfillRequest", sessionId, {
+      requestId,
+      responseCode: 403,
+      responseHeaders: [
+        { name: "content-type", value: "application/json" },
+        { name: "x-blocked-by", value: "browser-personas" },
+      ],
+      body: Buffer.from(payload, "utf8").toString("base64"),
+    });
+  }
+
   #routeEvent(msg: Record<string, unknown>, now: number): void {
     const method = String(msg["method"] ?? "");
     const params = (msg["params"] as Record<string, unknown>) ?? {};
@@ -334,6 +427,13 @@ export class BrowserPersonasDaemon {
       }
     }
 
+    // Request interception for a restricted persona is the proxy's own business: the
+    // client never asked for Fetch, so these frames must not reach it.
+    if (method === "Fetch.requestPaused" && parentSession && this.#intercepted.has(parentSession)) {
+      this.#handleInterceptedRequest(parentSession, params);
+      return;
+    }
+
     switch (decision.kind) {
       case "deliver":
         this.#deliver(decision.to, msg);
@@ -354,6 +454,25 @@ export class BrowserPersonasDaemon {
   }
 
   #deliver(ownerId: OwnerId, msg: Record<string, unknown>): void {
+    // Arming happens here rather than at the routing decision because a page's attach
+    // event often arrives while its tab is still unclaimed: it is held, then released
+    // straight to the owner once the claim lands. Delivery is the one point every path
+    // to an owner passes through.
+    if (msg["method"] === "Target.attachedToTarget") {
+      const params = (msg["params"] as Record<string, unknown>) ?? {};
+      const info = (params["targetInfo"] as Record<string, unknown>) ?? {};
+      const type = String(info["type"] ?? "");
+      const sessionId = params["sessionId"];
+      const persona = this.#personaOf(ownerId);
+      if (
+        typeof sessionId === "string" &&
+        (type === "page" || type === "iframe") &&
+        persona !== null &&
+        this.#personas.needsInterception(persona)
+      ) {
+        this.#beginInterception(sessionId);
+      }
+    }
     for (const client of this.#clients.values()) {
       if (client.ownerId === ownerId) this.#sendTo(client, msg);
     }
@@ -374,15 +493,56 @@ export class BrowserPersonasDaemon {
     const connId = randomUUID();
     const now = this.#now();
 
+    // An exclusive persona is handed to one agent at a time. Refusing at connect time,
+    // by name, is far kinder than letting two agents share a server-side session and
+    // discover it when one of them is silently logged out.
+    const lease = this.#personas.claimLease(persona, ownerId);
+    if (!lease.ok) {
+      ws.close(
+        1008,
+        `persona "${persona}" is held by ${lease.heldBy}. Pick another persona or wait for it to disconnect.`,
+      );
+      return;
+    }
+
     this.registry.connectOwner(ownerId, persona, now);
-    const client: ClientConn = { id: connId, ownerId, persona, ws, waitsForDebugger: false };
+    const client: ClientConn = {
+      id: connId,
+      ownerId,
+      persona,
+      ws,
+      waitsForDebugger: false,
+      pending: [],
+      contextReady: false,
+    };
     this.#clients.set(connId, client);
 
-    ws.on("message", (data) => this.#onClientMessage(client, data.toString()));
+    // Creating a persona's browser context is a round trip to Chrome. Commands that
+    // arrive first are buffered rather than answered against the wrong context — a tab
+    // opened in the default context would carry the wrong login, which is the exact
+    // failure this project exists to prevent.
+    void this.#personas
+      .ensure(persona)
+      .catch(() => undefined)
+      .then(() => {
+        client.contextReady = true;
+        const queued = client.pending.splice(0);
+        for (const raw of queued) this.#onClientMessage(client, raw);
+      });
+
+    ws.on("message", (data) => {
+      const raw = data.toString();
+      if (!client.contextReady) client.pending.push(raw);
+      else this.#onClientMessage(client, raw);
+    });
     ws.on("close", () => {
       this.#clients.delete(connId);
       const stillConnected = [...this.#clients.values()].some((c) => c.ownerId === ownerId);
-      if (!stillConnected) this.registry.disconnectOwner(ownerId, this.#now());
+      if (!stillConnected) {
+        this.registry.disconnectOwner(ownerId, this.#now());
+        this.#personas.releaseLease(persona, ownerId);
+        void this.#personas.persistAll().catch(() => undefined);
+      }
     });
     ws.on("error", () => {});
   }
@@ -402,7 +562,40 @@ export class BrowserPersonasDaemon {
     }
 
     if (process.env["BP_TRACE"]) console.error(`${client.ownerId} →chrome`, JSON.stringify(command).slice(0, 220));
-    const decision = decideInbound(this.registry, client.ownerId, command, now);
+    if (
+      command.method === "Fetch.disable" &&
+      command.sessionId &&
+      this.#intercepted.has(command.sessionId)
+    ) {
+      // Answered as a success the client can proceed on, but never forwarded: puppeteer
+      // disables Fetch on every page session during setup, and letting that through would
+      // turn a persona's read-only policy off without anyone asking for it.
+      this.#sendTo(client, { id: command.id, sessionId: command.sessionId, result: {} });
+      return;
+    }
+
+    if (
+      command.method === "Fetch.enable" &&
+      command.sessionId &&
+      this.#intercepted.has(command.sessionId)
+    ) {
+      this.#sendTo(client, {
+        id: command.id,
+        sessionId: command.sessionId,
+        error: {
+          code: CDP_SERVER_ERROR,
+          message:
+            `Fetch is held by browser-personas on this page: persona "${client.persona}" restricts ` +
+            `where it may go. Use a persona without an origin allowlist or read_only setting.`,
+        },
+      });
+      return;
+    }
+
+    const manifest = this.#personas.manifest(client.persona);
+    const decision = decideInbound(this.registry, client.ownerId, command, now, {
+      check: (url) => checkRequest(manifest, { method: "GET", url }),
+    });
 
     // A reply to a command sent on a session MUST carry that session id back. Puppeteer
     // routes responses by session before it looks at the id, so a refusal answered at
@@ -439,6 +632,12 @@ export class BrowserPersonasDaemon {
     if (decision.message.sessionId) out["sessionId"] = decision.message.sessionId;
 
     if (command.method === "Target.createTarget") {
+      // Every tab an agent opens lands in its persona's context, so the cookies it sees
+      // are that persona's and nobody else's.
+      const contextId = this.#personas.context(client.persona)?.browserContextId;
+      if (contextId) {
+        out["params"] = { ...(out["params"] as Record<string, unknown>), browserContextId: contextId };
+      }
       this.#startCreate(client.ownerId, () => this.#transport?.send(out));
       return;
     }

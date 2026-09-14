@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { chromeProfileDir, configDir, DEFAULT_HOST, DEFAULT_PORT, runtimeDir } from "./config.js";
+import { chromeProfileDir, configDir, DEFAULT_HOST, DEFAULT_PORT, personasDir, runtimeDir } from "./config.js";
 import { DaemonLock } from "./cli/lock.js";
 import { knownHosts, proxyUrl, revertHostFile, rewriteHostFile } from "./cli/mcpConfig.js";
 import { BrowserPersonasDaemon } from "./proxy/server.js";
+import { loginPersona } from "./cli/login.js";
+import { allowedOrigins, loadManifest } from "./personas/manifest.js";
 
 type Flags = Record<string, string | boolean>;
 
@@ -34,6 +36,8 @@ const HELP = `browser-personas — one Chrome, many agents
 
   init [--config-dir DIR] [--port N]   point chrome-devtools-mcp entries at the proxy
   init --revert                        restore the agent configs init changed
+  login NAME --url URL [--env staging] log a persona in once; the cookies persist
+  personas                             list personas, their scope and login state
   start [--port N] [--headed]          run the daemon in the foreground
   status [--port N]                    who holds which tabs
   stop [--config-dir DIR]              stop a running daemon
@@ -88,6 +92,8 @@ async function main(): Promise<number> {
         port,
         host,
         userDataDir: chromeProfileDir(dir),
+        personasDir: personasDir(dir),
+        configDir: configDir(dir),
         chromePath: typeof flags["chrome-path"] === "string" ? flags["chrome-path"] : undefined,
         headless: flags["headed"] ? false : true,
         ownership:
@@ -104,6 +110,54 @@ async function main(): Promise<number> {
       console.log(`browser-personas listening on http://${host}:${daemon.port}`);
       console.log(`point a client at it:  --browserUrl=${proxyUrl(daemon.port)}`);
       return -1; // stay in the foreground
+    }
+
+    case "login": {
+      const name = process.argv[3];
+      const url = typeof flags["url"] === "string" ? flags["url"] : undefined;
+      if (!name || name.startsWith("--") || !url) {
+        console.error("usage: browser-personas login NAME --url https://example.com [--env staging]");
+        return 1;
+      }
+      const result = await loginPersona({
+        personasDir: personasDir(dir),
+        configDir: configDir(dir),
+        name,
+        url,
+        env: typeof flags["env"] === "string" ? flags["env"] : undefined,
+        username: typeof flags["username"] === "string" ? flags["username"] : undefined,
+        description: typeof flags["description"] === "string" ? flags["description"] : undefined,
+      });
+      // The count, never the contents.
+      console.log(`saved ${result.cookies} cookies for "${name}"`);
+      console.log("restart the daemon, or reconnect, to pick it up");
+      return 0;
+    }
+
+    case "personas": {
+      const root = personasDir(dir);
+      const { readdirSync, existsSync } = await import("node:fs");
+      if (!existsSync(root)) {
+        console.log(`no personas yet. Create one with: browser-personas login NAME --url URL`);
+        return 0;
+      }
+      const names = readdirSync(root, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+      if (names.length === 0) {
+        console.log("no personas yet");
+        return 0;
+      }
+      for (const name of names) {
+        const manifest = loadManifest(root, name);
+        const scope = manifest ? allowedOrigins(manifest) : [];
+        const restriction = manifest?.read_only ? ` read-only:${manifest.read_only}` : "";
+        const exclusive = manifest?.exclusive ? " exclusive" : "";
+        console.log(`${name}${manifest?.env ? `  [${manifest.env}]` : ""}${restriction}${exclusive}`);
+        if (manifest?.description) console.log(`    ${manifest.description}`);
+        if (scope.length > 0) console.log(`    may reach: ${scope.join(", ")}`);
+      }
+      return 0;
     }
 
     case "status": {

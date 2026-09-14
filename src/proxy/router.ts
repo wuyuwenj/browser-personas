@@ -20,6 +20,12 @@ export type CdpEvent = {
   sessionId?: string;
 };
 
+/**
+ * Persona restrictions, injected so the router stays pure. The server supplies the
+ * caller's persona policy; the router just applies it to the URLs a command names.
+ */
+export type UrlPolicy = { check: (url: string) => { allowed: boolean; reason?: string } };
+
 export type InboundDecision =
   | { kind: "forward"; message: CdpCommand }
   | { kind: "refuse"; code: number; message: string }
@@ -60,8 +66,21 @@ export function decideInbound(
   ownerId: OwnerId,
   command: CdpCommand,
   now: number,
+  policy?: UrlPolicy,
 ): InboundDecision {
   const { method, params = {} } = command;
+
+  // The URL check comes first: an agent must not be able to reach a refused origin by
+  // any command, and refusing before the ownership bookkeeping keeps that true.
+  if (policy && (method === "Page.navigate" || method === "Target.createTarget")) {
+    const url = params["url"];
+    if (typeof url === "string") {
+      const verdict = policy.check(url);
+      if (!verdict.allowed) {
+        return { kind: "refuse", code: CDP_SERVER_ERROR, message: verdict.reason ?? "refused by policy" };
+      }
+    }
+  }
 
   if (BROWSER_WIDE_REFUSALS.has(method)) {
     return {

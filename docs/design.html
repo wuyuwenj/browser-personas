@@ -474,5 +474,24 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.2 — personas</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-14.</b> 43 unit tests, 18 integration tests, all green. Exit criterion met against the real application: two agents in one Chrome signed in as two different users at the same time, both still signed in after the daemon and the browser restarted, and a staging persona that cannot be navigated to production.</p>
+    <h3>Three defects the real app caught</h3>
+    <ul>
+      <li><b>An origin allowlist on subresources breaks every application.</b> Scoping the persona to its own app's origin blocked the app's own auth provider, and the login simply failed with a 400 from the identity service. The rule worth having is "this agent cannot NAVIGATE to production", so the allowlist now applies to top-level document loads only. <code>read_only</code> still applies to every request, because a write is a write wherever it goes.</li>
+      <li><b>Interception armed at the routing decision never armed at all.</b> A page's attach event usually arrives while its tab is still unclaimed, so it is held and then released straight to its owner — a path that bypasses the decision entirely. Arming moved into delivery, the one point every path to an owner passes through.</li>
+      <li><b>Puppeteer turns the policy off during its own setup.</b> It calls <code>Fetch.disable</code> on every new page session, which silently switched read-only off. That call is now answered locally as a success and never forwarded; the proxy owns Fetch on a restricted session.</li>
+    </ul>
+    <h3>Deviations</h3>
+    <ul>
+      <li><b>Jars are saved unconditionally, not on a dirty flag.</b> Detecting "cookies changed" needs the Network domain enabled, which depends on what the client happened to ask for. A missed save means a persona silently logged out on the next restart, and one <code>Storage.getCookies</code> per persona is cheap.</li>
+      <li><b>Two test-harness bugs worth naming</b>, because both look like product failures: a form whose submit button stays disabled until React sees real key events (setting <code>value</code> is not enough), and an in-page <code>waitForFunction</code> that dies with "execution context was destroyed" at the exact moment the navigation it waits for succeeds. Poll from outside the page.</li>
+    </ul>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>
