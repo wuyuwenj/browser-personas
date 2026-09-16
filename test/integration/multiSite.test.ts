@@ -232,3 +232,108 @@ describe("learning who signed in", () => {
     expect(manifest?.accounts?.find((a) => a.origin === DOORVEST)?.username).toBeUndefined();
   }, 90_000);
 });
+
+/**
+ * Saving a login without being asked to click. The signal is the application's, and it has
+ * to hold still before it counts: a multi-step sign-in passes through pages that are not
+ * the login page, and a probe can answer before a second factor is finished.
+ */
+describe("saving a login by itself", () => {
+  let harness: PersonaHarness;
+
+  afterEach(async () => {
+    await harness?.dispose();
+  });
+
+  /** A fake browser whose probe answer is whatever the test says it is, per call. */
+  async function sessionWithProbe(answers: number[], calls: string[] = []) {
+    const { LoginSession } = await import("../../src/personas/loginSession.js");
+    let at = 0;
+    const cdp = {
+      send: async (method: string, params: Record<string, unknown> = {}) => {
+        calls.push(method);
+        if (method === "Target.createTarget") return { targetId: "t1" };
+        if (method === "Target.attachToTarget") return { sessionId: "s1" };
+        if (method === "Storage.getCookies") return { cookies: [{ name: "s", value: "v" }] };
+        if (method === "Target.getTargetInfo") return { targetInfo: { url: DOORVEST + "/dashboard" } };
+        if (method === "Runtime.evaluate") {
+          const expr = String(params["expression"] ?? "");
+          if (expr.includes("querySelectorAll")) return { result: { value: null } };
+          if (expr.includes("fetch(")) return { result: { value: answers[Math.min(at++, answers.length - 1)] } };
+        }
+        return {};
+      },
+    };
+    return LoginSession.start({
+      personasDir: harness.personasDir,
+      configDir: harness.root,
+      persona: "katy",
+      url: DOORVEST,
+      probe: "/my-homes",
+      client: { cdp: cdp as never, kill: () => {}, exited: async () => {} },
+    });
+  }
+
+  it("does not settle on the first signed-in answer, only once it holds", async () => {
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    const session = await sessionWithProbe([200, 200]);
+    try {
+      await session.state();
+      expect(session.settled, "settled after a single check").toBe(false);
+      await session.state();
+      expect(session.settled).toBe(true);
+    } finally {
+      await session.close();
+    }
+  }, 90_000);
+
+  it("starts counting again if the app stops answering mid-flow", async () => {
+    // 200, then a redirect back to a login page (401), then 200 twice: the shape of a
+    // second factor landing after the first page said yes.
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    const session = await sessionWithProbe([200, 401, 200, 200]);
+    try {
+      await session.state();
+      await session.state();
+      expect(session.settled, "settled across a 401").toBe(false);
+      await session.state();
+      expect(session.settled).toBe(false);
+      await session.state();
+      expect(session.settled).toBe(true);
+    } finally {
+      await session.close();
+    }
+  }, 90_000);
+
+  it("stops saving by itself once the human asks to keep the window", async () => {
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    const session = await sessionWithProbe([200, 200, 200]);
+    try {
+      session.holdOpen();
+      await session.state();
+      await session.state();
+      expect(session.settled).toBe(false);
+      expect((await session.state()).autoFinish).toBe(false);
+    } finally {
+      await session.close();
+    }
+  }, 90_000);
+
+  it("captures once when the watcher and the Save button arrive together", async () => {
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    const calls: string[] = [];
+    const session = await sessionWithProbe([200, 200], calls);
+    await session.state();
+    await session.state();
+
+    calls.length = 0;
+    const [a, b] = await Promise.all([session.finish(), session.finish()]);
+
+    // Counting the captures is the assertion that matters. Two would run the second
+    // against a browser the first already closed, and could overwrite a good jar with
+    // whatever a dying session returns.
+    expect(calls.filter((c) => c === "Storage.getCookies")).toHaveLength(1);
+    expect(a).toBe(b);
+    expect((await session.state()).finished).toBe(true);
+  }, 90_000);
+});

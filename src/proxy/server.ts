@@ -93,6 +93,7 @@ export class BrowserPersonasDaemon {
   #personas: PersonaManager;
   #consoleToken: string;
   #logins = new Map<string, LoginSession>();
+  #loginWatch: NodeJS.Timeout | null = null;
   /** Sessions the proxy has taken over request interception on, for a restricted persona. */
   #intercepted = new Set<string>();
 
@@ -151,11 +152,45 @@ export class BrowserPersonasDaemon {
         : {}),
     });
     this.#logins.set(persona, session);
+    this.#watchLogins();
     return session.state();
   }
 
   async loginStates(): Promise<LoginState[]> {
     return Promise.all([...this.#logins.values()].map((s) => s.state()));
+  }
+
+  /**
+   * Watch every login in progress and save it as soon as it settles.
+   *
+   * Run by the daemon rather than by the console, so a sign-in started from the terminal
+   * finishes by itself too — and so closing the console tab mid-login does not strand a
+   * browser waiting for a click nobody is going to make.
+   */
+  #watchLogins(): void {
+    if (this.#loginWatch) return;
+    this.#loginWatch = setInterval(() => {
+      void (async () => {
+        if (this.#logins.size === 0) {
+          if (this.#loginWatch) clearInterval(this.#loginWatch);
+          this.#loginWatch = null;
+          return;
+        }
+        for (const [persona, session] of [...this.#logins]) {
+          await session.state().catch(() => undefined);
+          if (session.settled) await this.finishLogin(persona).catch(() => undefined);
+        }
+      })();
+    }, 1_500);
+    this.#loginWatch.unref?.();
+  }
+
+  /** Let the human keep the window open and save by hand. */
+  holdLogin(persona: string): boolean {
+    const session = this.#logins.get(persona);
+    if (!session) return false;
+    session.holdOpen();
+    return true;
   }
 
   async autofillLogin(persona: string): Promise<boolean> {
@@ -222,6 +257,8 @@ export class BrowserPersonasDaemon {
 
   async stop(): Promise<void> {
     if (this.#sweep) clearInterval(this.#sweep);
+    if (this.#loginWatch) clearInterval(this.#loginWatch);
+    this.#loginWatch = null;
     for (const session of this.#logins.values()) await session.close().catch(() => undefined);
     this.#logins.clear();
     await this.#personas.persistAll().catch(() => undefined);
@@ -848,6 +885,7 @@ export class BrowserPersonasDaemon {
       finishLogin: (persona: string) => this.finishLogin(persona),
       cancelLogin: (persona: string) => this.cancelLogin(persona),
       autofillLogin: (persona: string) => this.autofillLogin(persona),
+      holdLogin: (persona: string) => this.holdLogin(persona),
       reloadPersona: (persona: string) => {
         this.#personas.refresh(persona);
         void this.#personas.ensure(persona).catch(() => undefined);

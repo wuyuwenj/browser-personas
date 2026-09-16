@@ -192,6 +192,21 @@ line:
 Once, not on every call. Mark a persona `exclusive: true` to hand it to one agent at a
 time instead; the second gets a refusal naming the holder.
 
+## The login saves itself
+
+The daemon watches every sign-in in progress and asks your application, through the very
+cookies the login is producing, whether the session is real. Two checks in a row have to
+agree before it saves — a multi-step sign-in passes through pages that are not the login
+page, and a probe can answer before a second factor is finished, so one answer is not
+enough.
+
+The watcher runs in the daemon, not in the page, so a `browser-personas login` from the
+terminal finishes by itself too, and closing the console tab mid-login does not strand a
+browser waiting for a click nobody is going to make.
+
+Press **Do not save automatically** if you want to keep using that window first; the Save
+button comes back.
+
 ## The console
 
 ```bash
@@ -207,9 +222,8 @@ One page, printed with its token when the daemon starts. From it you can:
 - **Edit the persona itself** — description, environment, read-only level, exclusivity.
 - **Log in, however that site wants.** Press the button, a browser window opens, and you
   sign in with a password form, Google, GitHub, SSO, a magic link, two factors — anything.
-  The page polls your app through the very cookies the login is producing, so the green
-  dot means the application said yes, not that you said you were done. Then **Save this
-  login**.
+  It saves itself the moment the sign-in is really done, and the window closes. You are
+  never asked to confirm something the application can answer.
 - **Watch a tab.** Every agent's tabs are listed with a link that opens Chrome's own
   DevTools against one, without taking it from the agent.
 - **Edit or delete.** Deleting is refused while an agent holds the persona, naming them.
@@ -286,7 +300,7 @@ token, and they expose no credentials.
 ```
 browser-personas init [--port N]      point agent configs at the proxy
 browser-personas init --revert        restore them
-browser-personas login NAME --url U   log a persona in once; the cookies persist
+browser-personas login NAME --url U   log a persona in once; saves itself when you are done
 browser-personas personas             list personas, their scope and restrictions
 browser-personas console [--open]     print (or open) the local console link
 browser-personas mcp [--persona NAME] run as an MCP server (tools + registry)
@@ -313,7 +327,7 @@ you, the same as it can read Chrome's. The isolation here is between well-behave
 
 ## Status
 
-v0.7: the proxy, tab ownership, personas that hold several websites and survive any login
+v0.8: the proxy, tab ownership, personas that hold several websites and survive any login
 method, the registry MCP, and the console. Still ahead are per-owner audit logs and rate limits, IndexedDB for the
 few SDKs that use it, and Linux vault coverage. The design and a per-milestone record of what the
 real browser taught us are in [`docs/design.html`](docs/design.html).

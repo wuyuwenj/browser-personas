@@ -87,7 +87,14 @@ async function main(): Promise<number> {
       const lock = new DaemonLock(join(runtimeDir(dir), "daemon.lock"));
       if (!lock.acquire(port)) {
         const info = lock.read();
-        console.error(`A daemon is already running (pid ${info?.pid ?? "?"}, port ${info?.port ?? "?"}).`);
+        // Loud, and on both streams. A refusal that only goes to a log file lets an old
+        // daemon keep serving an old build while a restart looks like it worked.
+        const message =
+          `browser-personas is ALREADY RUNNING (pid ${info?.pid ?? "?"}, port ${info?.port ?? "?"}).\n` +
+          `Nothing was started, and that daemon may be running an older build.\n` +
+          `Stop it first:  browser-personas stop${dir ? ` --config-dir ${dir}` : ""}`;
+        console.error(message);
+        console.log(message);
         return 1;
       }
       mkdirSync(chromeProfileDir(dir), { recursive: true });
@@ -128,12 +135,13 @@ async function main(): Promise<number> {
         configDir: configDir(dir),
         name,
         url,
+        probe: typeof flags["probe"] === "string" ? flags["probe"] : undefined,
         env: typeof flags["env"] === "string" ? flags["env"] : undefined,
         username: typeof flags["username"] === "string" ? flags["username"] : undefined,
         description: typeof flags["description"] === "string" ? flags["description"] : undefined,
       });
       // The count, never the contents.
-      console.log(`saved ${result.cookies} cookies for "${name}"`);
+      console.log(`saved ${result.cookies} cookies for "${name}"${result.identity ? ` (${result.identity})` : ""}`);
       console.log("restart the daemon, or reconnect, to pick it up");
       return 0;
     }
@@ -251,12 +259,25 @@ async function main(): Promise<number> {
       }
       try {
         process.kill(info.pid, "SIGTERM");
-        console.log(`stopped daemon pid ${info.pid}`);
       } catch {
         console.log(`daemon pid ${info.pid} was already gone; clearing the lock`);
         lock.release(true);
+        return 0;
       }
-      return 0;
+      // Wait for it to actually go. Returning while the port is still held is what makes
+      // a following `start` fail, which is the failure that hid a stale daemon twice.
+      for (let attempt = 0; attempt < 50; attempt++) {
+        try {
+          process.kill(info.pid, 0);
+        } catch {
+          console.log(`stopped daemon pid ${info.pid}`);
+          lock.release(true);
+          return 0;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      console.error(`daemon pid ${info.pid} did not exit within 10s`);
+      return 1;
     }
 
     default:

@@ -582,5 +582,22 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.8 — the login saves itself</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-16.</b> 68 unit tests and 54 integration tests. Nobody should have to confirm something the application can answer.</p>
+    <p>The daemon now watches every sign-in in progress and saves it when the session becomes real. <b>Two checks in a row have to agree.</b> One is not enough: a multi-step sign-in passes through pages that are not the login page — a consent screen, an account chooser — and a probe can answer before a second factor is finished. A failed check resets the count, which is what makes a second factor landing late behave correctly rather than racing.</p>
+    <p>The watcher lives in the daemon rather than in the page, so a terminal <code>login</code> finishes by itself too, and closing the console tab mid-login does not strand a browser waiting for a click nobody will make. The keypress flow is gone entirely; both paths now share one implementation.</p>
+    <h3>Two defects fixed alongside</h3>
+    <ul>
+      <li><b><code>finish</code> was not idempotent.</b> The watcher and the Save button can arrive together, and the second capture would run against a browser the first already closed — overwriting a good jar with whatever a dying session returns.</li>
+      <li><b><code>start</code> refused a stale daemon too quietly.</b> It printed to stderr, which went to a log nobody read, so an old daemon kept serving an old build while a restart looked like it had worked. Twice. It now says so on both streams and names the fix, and <code>stop</code> waits for the process to actually exit instead of returning while the port is still held.</li>
+    </ul>
+    <h3>A third test that proved nothing</h3>
+    <p>"Captures once when the watcher and the Save button arrive together" asserted that both calls returned the same number — which they do whether or not the guard exists. Counting the captures is the assertion that matters. That is three headline tests in this project that survived deleting the thing they named, every one caught only by the mutation pass.</p>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>

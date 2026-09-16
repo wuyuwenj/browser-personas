@@ -32,6 +32,10 @@ export type LoginState = {
   signedIn: boolean;
   /** Who this looks like, learned rather than typed twice. */
   identity: string | null;
+  /** Consecutive checks that have seen a real session. Two means it is settled. */
+  stableChecks: number;
+  /** False once the human asks to keep the window open and save by hand. */
+  autoFinish: boolean;
   /** What the probe returned, when there is one. */
   probeStatus: number | null;
   probeUrl: string | null;
@@ -93,6 +97,17 @@ export class LoginSession {
    * for SSO rather than only for a local password form.
    */
   #identifiers: string[] = [];
+  /**
+   * How many checks in a row have seen a signed-in session.
+   *
+   * One is not enough. A multi-step sign-in passes through pages that are not the login
+   * page — a consent screen, an account chooser, an interstitial — and a probe can answer
+   * before a second factor is done. Requiring the answer to hold still is what separates
+   * "signed in" from "part way through signing in".
+   */
+  #stable = 0;
+  #autoFinish = true;
+  #finishing: Promise<number> | null = null;
 
   private constructor(options: LoginSessionOptions, chrome: LaunchedChrome, cdp: CdpClient) {
     this.#options = options;
@@ -178,13 +193,13 @@ export class LoginSession {
         // application itself answers whether they are enough.
         probeStatus = await this.#evaluateStatus(probe);
         signedIn = probeStatus !== null && probeStatus >= 200 && probeStatus < 300;
-        if (signedIn) this.#landedAt = currentUrl;
       } else {
         // With no probe, the honest signal is that the app moved the human off the page
         // it landed them on.
         signedIn = currentUrl !== this.#options.url && !/\/login\b/.test(currentUrl);
-        if (signedIn) this.#landedAt = currentUrl;
       }
+      if (signedIn) this.#landedAt = currentUrl;
+      this.#stable = signedIn ? this.#stable + 1 : 0;
     }
 
     return {
@@ -193,6 +208,8 @@ export class LoginSession {
       currentUrl,
       signedIn: this.#finished ? true : signedIn,
       identity: bestIdentifier(this.#identifiers),
+      stableChecks: this.#stable,
+      autoFinish: this.#autoFinish,
       probeStatus,
       probeUrl: this.probeUrl,
       startedAt: this.startedAt,
@@ -201,6 +218,25 @@ export class LoginSession {
       error: this.#error,
     };
   }
+
+  /** Stop saving by itself, so the human can keep using the window first. */
+  holdOpen(): void {
+    this.#autoFinish = false;
+  }
+
+  get settled(): boolean {
+    return !this.#finished && this.#autoFinish && this.#stable >= LoginSession.STABLE_CHECKS;
+  }
+
+  /**
+   * Two checks in a row, roughly three seconds apart.
+   *
+   * One is not enough: a multi-step sign-in passes through pages that are not the login
+   * page — a consent screen, an account chooser — and a probe can answer before a second
+   * factor is finished. Requiring the answer to hold still is what separates "signed in"
+   * from "part way through signing in".
+   */
+  static readonly STABLE_CHECKS = 2;
 
   /** The value sitting in whatever passes for a username field on this page. */
   async #readIdentifier(): Promise<string | null> {
@@ -282,6 +318,14 @@ export class LoginSession {
 
   /** Save the jar and close the browser. The jar is the artifact; the profile is discarded. */
   async finish(extra: Partial<PersonaManifest> = {}): Promise<number> {
+    // The daemon's watcher and the Save button can arrive together; the second must not
+    // capture a second time against a browser the first already closed.
+    if (this.#finishing) return this.#finishing;
+    this.#finishing = this.#doFinish(extra);
+    return this.#finishing;
+  }
+
+  async #doFinish(extra: Partial<PersonaManifest>): Promise<number> {
     try {
       // Every cookie in the browser, not just the app's: an OAuth login leaves the
       // provider's session behind too, and that is what makes a silent re-auth work.

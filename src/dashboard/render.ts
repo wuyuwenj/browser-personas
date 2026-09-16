@@ -226,14 +226,24 @@ function personaCard(p) {
     state.secrets && state.secrets[p.name] ? '<span class="badge key">password stored</span>' : "",
   ].join("");
 
+  const headline = !login ? "" :
+    login.finished ? '<b>Saved.</b> ' + (login.cookiesSaved || 0) + ' cookies kept.' :
+    !login.signedIn ? '<b>Signing in to ' + esc(login.url) + '…</b> finish in the browser window that opened.' :
+    login.autoFinish ? '<b>Signed in' + (login.identity ? ' as ' + esc(login.identity) : "") + ' — saving…</b>' :
+    '<b>Signed in.</b> Save when you are done in that window.';
+
   const panel = login && !login.finished
-    ? '<div class="login"><b>Signing in to ' + esc(login.url) + '…</b> finish in the browser window that opened.' +
+    ? '<div class="login">' + headline +
       '<div class="url">now at ' + esc(login.currentUrl) + '</div>' +
-      (login.identity ? '<div class="url">signing in as <b>' + esc(login.identity) + '</b></div>' : "") +
+      (login.identity && !login.signedIn ? '<div class="url">signing in as <b>' + esc(login.identity) + '</b></div>' : "") +
       (login.probeStatus !== null ? '<div class="url">' + esc(login.probeUrl || "") + ' &rarr; ' + login.probeStatus + '</div>' : "") +
       '<div class="row">' +
-      '<button class="primary" data-act="finish" data-name="' + esc(p.name) + '"' + (login.signedIn ? "" : " disabled") + '>' +
-        (login.signedIn ? "Save this login" : "Waiting for sign-in…") + '</button>' +
+      (login.signedIn && !login.autoFinish
+        ? '<button class="primary" data-act="finish" data-name="' + esc(p.name) + '">Save this login</button>'
+        : "") +
+      (login.autoFinish && !login.signedIn
+        ? '<button data-act="hold" data-name="' + esc(p.name) + '">Do not save automatically</button>'
+        : "") +
       (state.secrets && state.secrets[p.name] ? '<button data-act="autofill" data-name="' + esc(p.name) + '">Fill the form</button>' : "") +
       '<button data-act="cancel" data-name="' + esc(p.name) + '">Cancel</button>' +
       '</div></div>'
@@ -289,7 +299,8 @@ function render() {
 
 async function refresh(force) {
   // A two-second re-render would wipe whatever is half-typed in an open form.
-  if (open.kind && !force) return;
+  const loginRunning = (state.logins || []).some((l) => !l.finished);
+  if (open.kind && !force && !loginRunning) return;
   try {
     state = await api("GET", "/api/state");
     render();
@@ -333,6 +344,7 @@ document.addEventListener("click", async (event) => {
     }
     if (act === "login") await api("POST", "/api/personas/" + encodeURIComponent(name) + "/login", { origin });
     if (act === "autofill") await api("POST", "/api/personas/" + encodeURIComponent(name) + "/login/autofill", {});
+    if (act === "hold") await api("POST", "/api/personas/" + encodeURIComponent(name) + "/login/hold", {});
     if (act === "finish") await api("POST", "/api/personas/" + encodeURIComponent(name) + "/login/finish", {});
     if (act === "cancel") await api("DELETE", "/api/personas/" + encodeURIComponent(name) + "/login");
     if (act === "delete" && confirm('Delete "' + name + '" and shred its saved login?')) {
