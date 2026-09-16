@@ -254,6 +254,10 @@ Only a name and an app URL are required. Everything else is learned from a real 
   a real login, so allowing them grants nothing the app does not already do.
 - **The signed-in path is inferred** from wherever the login landed you, if you did not
   give one.
+- **The username fills itself in.** Whatever address you typed into the sign-in form is
+  remembered — including on Google's or Okta's own page, which is what makes this work for
+  SSO. If you never typed one, the address is read out of the ID token the login left
+  behind. A name you set by hand is never overwritten.
 
 ### Passwords
 
@@ -309,7 +313,7 @@ you, the same as it can read Chrome's. The isolation here is between well-behave
 
 ## Status
 
-v0.6: the proxy, tab ownership, personas that hold several websites and survive any login
+v0.7: the proxy, tab ownership, personas that hold several websites and survive any login
 method, the registry MCP, and the console. Still ahead are per-owner audit logs and rate limits, IndexedDB for the
 few SDKs that use it, and Linux vault coverage. The design and a per-milestone record of what the
 real browser taught us are in [`docs/design.html`](docs/design.html).

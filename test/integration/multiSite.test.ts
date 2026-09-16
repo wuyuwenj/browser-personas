@@ -152,3 +152,83 @@ describe("a persona with several websites", () => {
       .toBe(true);
   }, 90_000);
 });
+
+/**
+ * Filling in the username after a login, rather than asking for it twice. The session's
+ * decisions are driven through a fake browser so both sources can be exercised: the field
+ * a human typed into, and the ID token an OAuth sign-in leaves behind.
+ */
+describe("learning who signed in", () => {
+  let harness: PersonaHarness;
+
+  afterEach(async () => {
+    await harness?.dispose();
+  });
+
+  const jwt = (payload: Record<string, unknown>): string =>
+    ["eyJhbGciOiJIUzI1NiJ9", Buffer.from(JSON.stringify(payload)).toString("base64url"), "sig"].join(".");
+
+  async function runLogin(opts: {
+    typed?: string | null;
+    cookies?: Record<string, unknown>[];
+    storage?: Record<string, { local: Record<string, string>; session: Record<string, string> }>;
+  }) {
+    const { LoginSession } = await import("../../src/personas/loginSession.js");
+    const cdp = {
+      send: async (method: string, params: Record<string, unknown> = {}) => {
+        if (method === "Target.createTarget") return { targetId: "t1" };
+        if (method === "Target.attachToTarget") return { sessionId: "s1" };
+        if (method === "Storage.getCookies") return { cookies: opts.cookies ?? [] };
+        if (method === "Runtime.evaluate") {
+          const expr = String(params["expression"] ?? "");
+          if (expr.includes("querySelectorAll")) return { result: { value: opts.typed ?? null } };
+          if (expr.includes("localStorage")) {
+            const first = Object.values(opts.storage ?? {})[0];
+            return { result: { value: first ?? { local: {}, session: {} } } };
+          }
+        }
+        return {};
+      },
+    };
+    const session = await LoginSession.start({
+      personasDir: harness.personasDir,
+      configDir: harness.root,
+      persona: "katy",
+      url: DOORVEST,
+      client: { cdp: cdp as never, kill: () => {}, exited: async () => {} },
+    });
+    await session.state();
+    await session.finish();
+    return loadManifest(harness.personasDir, "katy");
+  }
+
+  it("fills in the address the human typed into the sign-in form", async () => {
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    const manifest = await runLogin({ typed: "katy@example.com" });
+    expect(manifest?.accounts?.find((a) => a.origin === DOORVEST)?.username).toBe("katy@example.com");
+  }, 90_000);
+
+  it("reads the address out of an ID token when the sign-in was OAuth", async () => {
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    // No form to read: the provider hosted it. The token it left behind names the user.
+    const manifest = await runLogin({
+      typed: null,
+      cookies: [{ name: "id_token", value: jwt({ email: "katy@gmail.com" }) }],
+    });
+    expect(manifest?.accounts?.find((a) => a.origin === DOORVEST)?.username).toBe("katy@gmail.com");
+  }, 90_000);
+
+  it("never overwrites a username somebody set by hand", async () => {
+    harness = await startPersonaHarness([
+      { name: "katy", env: "staging", accounts: [{ origin: DOORVEST, username: "chosen-by-hand" }] },
+    ]);
+    const manifest = await runLogin({ typed: "something-else@example.com" });
+    expect(manifest?.accounts?.find((a) => a.origin === DOORVEST)?.username).toBe("chosen-by-hand");
+  }, 90_000);
+
+  it("leaves the username unset rather than guessing from a password field", async () => {
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    const manifest = await runLogin({ typed: "correct horse battery staple" });
+    expect(manifest?.accounts?.find((a) => a.origin === DOORVEST)?.username).toBeUndefined();
+  }, 90_000);
+});

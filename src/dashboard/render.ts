@@ -229,6 +229,7 @@ function personaCard(p) {
   const panel = login && !login.finished
     ? '<div class="login"><b>Signing in to ' + esc(login.url) + '…</b> finish in the browser window that opened.' +
       '<div class="url">now at ' + esc(login.currentUrl) + '</div>' +
+      (login.identity ? '<div class="url">signing in as <b>' + esc(login.identity) + '</b></div>' : "") +
       (login.probeStatus !== null ? '<div class="url">' + esc(login.probeUrl || "") + ' &rarr; ' + login.probeStatus + '</div>' : "") +
       '<div class="row">' +
       '<button class="primary" data-act="finish" data-name="' + esc(p.name) + '"' + (login.signedIn ? "" : " disabled") + '>' +

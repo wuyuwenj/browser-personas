@@ -14,6 +14,7 @@ import {
 } from "./manifest.js";
 import { readJar, vaultKey, writeJar, type StoredCookie } from "./vault.js";
 import { captureStorage, restoreStorage } from "./storage.js";
+import { bestIdentifier, emailFromTokens, IDENTIFIER_SELECTORS, sessionValues } from "./identity.js";
 
 /**
  * One interactive login, driven by polling rather than by a keypress.
@@ -29,6 +30,8 @@ export type LoginState = {
   /** The page the human is looking at right now. */
   currentUrl: string;
   signedIn: boolean;
+  /** Who this looks like, learned rather than typed twice. */
+  identity: string | null;
   /** What the probe returned, when there is one. */
   probeStatus: number | null;
   probeUrl: string | null;
@@ -84,6 +87,12 @@ export class LoginSession {
   /** Origins the persona already had storage for, so a re-login keeps them. */
   #knownOrigins = new Set<string>();
   #landedAt: string | null = null;
+  /**
+   * Identifiers seen in a sign-in field at any point in the journey. Google and Okta host
+   * that field on their own page, so watching the whole journey is what makes this work
+   * for SSO rather than only for a local password form.
+   */
+  #identifiers: string[] = [];
 
   private constructor(options: LoginSessionOptions, chrome: LaunchedChrome, cdp: CdpClient) {
     this.#options = options;
@@ -159,6 +168,10 @@ export class LoginSession {
         /* the human may have closed the tab; the poll below still decides */
       }
 
+      // Read before the probe, so a redirect away from the form does not lose it.
+      const typed = await this.#readIdentifier();
+      if (typed) this.#identifiers.push(typed);
+
       const probe = this.probeUrl;
       if (probe) {
         // Asked from inside the page, so the cookies the login just set ride along and the
@@ -179,6 +192,7 @@ export class LoginSession {
       url: this.url,
       currentUrl,
       signedIn: this.#finished ? true : signedIn,
+      identity: bestIdentifier(this.#identifiers),
       probeStatus,
       probeUrl: this.probeUrl,
       startedAt: this.startedAt,
@@ -186,6 +200,28 @@ export class LoginSession {
       cookiesSaved: this.#cookiesSaved,
       error: this.#error,
     };
+  }
+
+  /** The value sitting in whatever passes for a username field on this page. */
+  async #readIdentifier(): Promise<string | null> {
+    if (!this.#pageSession) return null;
+    try {
+      const result = await this.#cdp.send(
+        "Runtime.evaluate",
+        {
+          // Password fields are never read: the selector list names identity inputs only.
+          expression: `Array.from(document.querySelectorAll(${JSON.stringify(IDENTIFIER_SELECTORS)}))
+            .map(el => el.value).filter(Boolean)[0] || null`,
+          returnByValue: true,
+        },
+        this.#pageSession,
+        8_000,
+      );
+      const value = (result["result"] as { value?: unknown } | undefined)?.value;
+      return typeof value === "string" ? value : null;
+    } catch {
+      return null;
+    }
   }
 
   async #evaluateStatus(probe: string): Promise<number | null> {
@@ -271,6 +307,11 @@ export class LoginSession {
         (origin) => origin !== appOrigin,
       );
       // With no probe configured, where the login actually landed is the best one there is.
+      // An OAuth login shows the app no password and no form — but it does leave an ID
+      // token in the session it just created, and that token names the user.
+      const identity =
+        bestIdentifier(this.#identifiers) ?? emailFromTokens(sessionValues(cookies, storage));
+
       const current = existing ? findAccount(existing, appOrigin) : undefined;
       const inferredProbe = current?.probe ?? (this.#landedAt ? safePath(this.#landedAt) : undefined);
       // Only the website that was signed in to is touched; the persona's other sites keep
@@ -278,6 +319,8 @@ export class LoginSession {
       const withAccount = upsertAccount(existing ?? { name: this.persona }, {
         origin: appOrigin,
         ...(inferredProbe ? { probe: inferredProbe } : {}),
+        // Never overwrite a name the user set by hand; only fill one in.
+        ...(current?.username || !identity ? {} : { username: identity }),
       });
 
       saveManifest(this.#options.personasDir, {

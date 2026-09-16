@@ -570,5 +570,17 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.7 — the console stops asking twice</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-16.</b> 68 unit tests and 50 integration tests. After a sign-in, the username fills itself in.</p>
+    <p>Two sources cover nearly every login shape. The first is the address the human typed, watched across the whole journey rather than on the app's own page — which is the detail that makes it work for SSO, since Google and Okta host that field themselves. The second is the ID token the sign-in left in the session: an OAuth login shows the app no password and no form, but the token it leaves names the user. Its signature is not checked and does not need to be; nothing is being authorised, a label is being read off a token already in our own vault.</p>
+    <h3>A hole the test found immediately</h3>
+    <p>A JWT is dot-separated word characters, so it sailed through a naive username pattern and would have been written into the manifest as somebody's name. Length alone does not separate the two — the shape does: three or more segments with a long one. A name with dots in it is still a name.</p>
+    <p>A username set by hand is never overwritten, and a value with whitespace is refused outright, so a mis-guessed selector cannot put a password in the manifest.</p>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>
