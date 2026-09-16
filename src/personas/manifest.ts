@@ -133,6 +133,37 @@ export function primaryOrigins(manifest: PersonaManifest): string[] {
   return (manifest.accounts ?? []).map((a) => normalizeOrigin(a.origin));
 }
 
+/**
+ * Accounts are addressed by origin, never by position.
+ *
+ * A persona holds several websites, and an index-keyed API breaks the moment two edits
+ * race or a row is removed between read and write — the edit lands on the wrong site,
+ * silently. An origin is the natural identity of a website inside a persona, so that is
+ * the key.
+ */
+export function findAccount(manifest: PersonaManifest, origin: string): PersonaAccount | undefined {
+  const wanted = normalizeOrigin(origin);
+  return (manifest.accounts ?? []).find((a) => normalizeOrigin(a.origin) === wanted);
+}
+
+export function upsertAccount(manifest: PersonaManifest, account: PersonaAccount): PersonaManifest {
+  const wanted = normalizeOrigin(account.origin);
+  const accounts = [...(manifest.accounts ?? [])];
+  const at = accounts.findIndex((a) => normalizeOrigin(a.origin) === wanted);
+  const merged: PersonaAccount = at === -1 ? account : { ...accounts[at]!, ...account };
+  if (at === -1) accounts.push(merged);
+  else accounts[at] = merged;
+  return { ...manifest, accounts };
+}
+
+export function removeAccount(manifest: PersonaManifest, origin: string): PersonaManifest {
+  const wanted = normalizeOrigin(origin);
+  return {
+    ...manifest,
+    accounts: (manifest.accounts ?? []).filter((a) => normalizeOrigin(a.origin) !== wanted),
+  };
+}
+
 export function normalizeOrigin(value: string): string {
   try {
     return new URL(value).origin;

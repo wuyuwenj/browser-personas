@@ -13,7 +13,7 @@ import { checkConsoleRequest, loadOrCreateToken } from "../dashboard/guards.js";
 import { handleApi } from "../dashboard/api.js";
 import { LoginSession, type LoginState } from "../personas/loginSession.js";
 import { readSecret } from "../personas/secrets.js";
-import { loadManifest } from "../personas/manifest.js";
+import { findAccount, loadManifest } from "../personas/manifest.js";
 import { vaultKey } from "../personas/vault.js";
 import type { DaemonStatus } from "./status.js";
 import {
@@ -126,11 +126,18 @@ export class BrowserPersonasDaemon {
 
   // ---- login sessions -----------------------------------------------------
 
-  async startLogin(persona: string): Promise<LoginState> {
+  /** `origin` picks which of the persona's websites to sign in to; the first, by default. */
+  async startLogin(persona: string, origin?: string): Promise<LoginState> {
     await this.#logins.get(persona)?.close().catch(() => undefined);
     const manifest = loadManifest(this.#personasDir, persona);
-    const account = manifest?.accounts?.[0];
-    if (!account?.origin) throw new Error(`Persona "${persona}" has no origin to log in to.`);
+    const account = origin && manifest ? findAccount(manifest, origin) : manifest?.accounts?.[0];
+    if (!account?.origin) {
+      throw new Error(
+        origin
+          ? `Persona "${persona}" has no website at ${origin}.`
+          : `Persona "${persona}" has no website to log in to.`,
+      );
+    }
 
     const password = readSecret(this.#personasDir, persona, vaultKey(this.#configDir));
     const session = await LoginSession.start({
@@ -837,7 +844,7 @@ export class BrowserPersonasDaemon {
       vaultKey: () => vaultKey(this.#configDir),
       status: () => this.status(),
       loginStates: () => this.loginStates(),
-      startLogin: (persona: string) => this.startLogin(persona),
+      startLogin: (persona: string, origin?: string) => this.startLogin(persona, origin),
       finishLogin: (persona: string) => this.finishLogin(persona),
       cancelLogin: (persona: string) => this.cancelLogin(persona),
       autofillLogin: (persona: string) => this.autofillLogin(persona),
@@ -871,6 +878,7 @@ export class BrowserPersonasDaemon {
             origin: a.origin,
             username: a.username,
             role: a.role,
+            probe: a.probe,
           })),
           leaseHolder: this.#personas.leaseHolder(name),
           holders: this.registry.holdersOf(name).map((o) => ({

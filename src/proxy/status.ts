@@ -10,7 +10,8 @@ export type PersonaStatus = {
   origins: string[];
   /** Identity-provider origins learned from a real login, allowed so re-auth works. */
   authOrigins: string[];
-  accounts: { origin: string; username?: string; role?: string }[];
+  /** The websites this persona signs in to. One session covers all of them. */
+  accounts: { origin: string; username?: string; role?: string; probe?: string }[];
   leaseHolder: string | null;
   /** Agents connected on this persona right now. This is the co-tenancy signal. */
   holders: { owner: string; tabs: number; since: string }[];

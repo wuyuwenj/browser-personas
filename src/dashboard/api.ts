@@ -2,8 +2,12 @@ import { existsSync, rmSync } from "node:fs";
 import {
   allowedOrigins,
   loadManifest,
+  normalizeOrigin,
   personaPath,
+  removeAccount,
   saveManifest,
+  upsertAccount,
+  type PersonaAccount,
   type PersonaManifest,
   type ReadOnlyLevel,
 } from "../personas/manifest.js";
@@ -31,7 +35,8 @@ export type ApiDeps = {
   vaultKey: () => Buffer;
   status: () => DaemonStatus;
   loginStates: () => Promise<LoginState[]>;
-  startLogin: (persona: string) => Promise<LoginState>;
+  /** `origin` picks which of the persona's websites to sign in to. */
+  startLogin: (persona: string, origin?: string) => Promise<LoginState>;
   finishLogin: (persona: string) => Promise<LoginState>;
   cancelLogin: (persona: string) => Promise<void>;
   autofillLogin: (persona: string) => Promise<boolean>;
@@ -45,33 +50,33 @@ function readLevel(value: unknown): ReadOnlyLevel {
   return value === "strict" || value === "inspect" || value === "cooperative" ? value : false;
 }
 
-/** Fields the console may set. Anything else in the body is ignored rather than trusted. */
-function applyFields(manifest: PersonaManifest, body: Record<string, unknown>): PersonaManifest {
+/** Persona-level fields the console may set. A website is edited through its own route. */
+function applyPersonaFields(manifest: PersonaManifest, body: Record<string, unknown>): PersonaManifest {
   const next: PersonaManifest = { ...manifest };
   if (typeof body["description"] === "string") next.description = body["description"];
   if (typeof body["env"] === "string") next.env = body["env"];
   if (typeof body["exclusive"] === "boolean") next.exclusive = body["exclusive"];
   if ("read_only" in body) next.read_only = readLevel(body["read_only"]);
-  if (typeof body["origin"] === "string" && body["origin"]) {
-    const accounts = next.accounts?.length ? [...next.accounts] : [{ origin: body["origin"] }];
-    accounts[0] = {
-      ...accounts[0]!,
-      origin: body["origin"],
-      ...(typeof body["username"] === "string" ? { username: body["username"] } : {}),
-      ...(typeof body["probe"] === "string" ? { probe: body["probe"] } : {}),
-    };
-    next.accounts = accounts;
-  } else if (next.accounts?.[0]) {
-    next.accounts = [
-      {
-        ...next.accounts[0],
-        ...(typeof body["username"] === "string" ? { username: body["username"] } : {}),
-        ...(typeof body["probe"] === "string" ? { probe: body["probe"] } : {}),
-      },
-      ...next.accounts.slice(1),
-    ];
-  }
   return next;
+}
+
+/** One website inside a persona. `origin` identifies it; everything else is optional. */
+function accountFrom(body: Record<string, unknown>): PersonaAccount | null {
+  const origin = typeof body["origin"] === "string" ? body["origin"].trim() : "";
+  if (!origin) return null;
+  try {
+    return {
+      origin: new URL(origin).origin,
+      ...(typeof body["username"] === "string" && body["username"] ? { username: body["username"] } : {}),
+      ...(typeof body["role"] === "string" && body["role"] ? { role: body["role"] } : {}),
+      ...(typeof body["probe"] === "string" && body["probe"] ? { probe: body["probe"] } : {}),
+      ...(typeof body["password_ref"] === "string" && body["password_ref"]
+        ? { password_ref: body["password_ref"] }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function handleApi(
@@ -97,7 +102,9 @@ export async function handleApi(
     const origin = String(body["origin"] ?? "").trim();
     if (!origin) return bad(400, "An origin is required — it is what scopes the persona.");
 
-    const manifest = applyFields({ name, accounts: [{ origin }] }, body);
+    const account = accountFrom(body);
+    if (!account) return bad(400, `"${origin}" is not a URL this can navigate to.`);
+    const manifest = applyPersonaFields({ name, accounts: [account] }, body);
     saveManifest(deps.personasDir, {
       ...manifest,
       seeded_by: process.env["USER"],
@@ -118,7 +125,7 @@ export async function handleApi(
     if (!manifest) return bad(404, `No persona named "${name}".`);
 
     if (method === "PATCH" && rest === "") {
-      saveManifest(deps.personasDir, applyFields(manifest, body));
+      saveManifest(deps.personasDir, applyPersonaFields(manifest, body));
       if (typeof body["password"] === "string") {
         if (body["password"]) writeSecret(deps.personasDir, name, deps.vaultKey(), body["password"]);
         else deleteSecret(deps.personasDir, name);
@@ -138,7 +145,37 @@ export async function handleApi(
       return ok({ name, removed: true });
     }
 
-    if (method === "POST" && rest === "/login") return ok(await deps.startLogin(name));
+    // ---- the websites inside a persona ----------------------------------
+    if (rest === "/accounts") {
+      if (method === "PUT") {
+        const account = accountFrom(body);
+        if (!account) return bad(400, "A website needs an origin, e.g. https://app.example.com");
+        saveManifest(deps.personasDir, upsertAccount(manifest, account));
+        deps.reloadPersona(name);
+        return ok({ origin: account.origin, saved: true });
+      }
+      if (method === "DELETE") {
+        const origin = typeof body["origin"] === "string" ? body["origin"] : "";
+        if (!origin) return bad(400, "Which website? Pass its origin.");
+        const next = removeAccount(manifest, origin);
+        if ((next.accounts ?? []).length === (manifest.accounts ?? []).length) {
+          return bad(404, `"${name}" has no website at ${origin}.`);
+        }
+        if ((next.accounts ?? []).length === 0) {
+          // An empty allowlist means "unscoped", which is the opposite of what removing
+          // the last website should mean. Deleting the persona is the honest way to do it.
+          return bad(409, `That is ${name}'s only website. Delete the persona instead.`);
+        }
+        saveManifest(deps.personasDir, next);
+        deps.reloadPersona(name);
+        return ok({ origin: normalizeOrigin(origin), removed: true });
+      }
+    }
+
+    if (method === "POST" && rest === "/login") {
+      const origin = typeof body["origin"] === "string" ? body["origin"] : undefined;
+      return ok(await deps.startLogin(name, origin));
+    }
     if (method === "POST" && rest === "/login/autofill") return ok({ filled: await deps.autofillLogin(name) });
     if (method === "POST" && rest === "/login/finish") return ok(await deps.finishLogin(name));
     if (method === "DELETE" && rest === "/login") {

@@ -3,9 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launchChrome, type LaunchedChrome } from "../chrome/launch.js";
 import { CdpClient } from "../cdp/client.js";
-import { jarPath, loadManifest, normalizeOrigin, saveManifest, type PersonaManifest } from "./manifest.js";
-import { vaultKey, writeJar, type StoredCookie } from "./vault.js";
-import { captureStorage } from "./storage.js";
+import {
+  findAccount,
+  jarPath,
+  loadManifest,
+  normalizeOrigin,
+  saveManifest,
+  upsertAccount,
+  type PersonaManifest,
+} from "./manifest.js";
+import { readJar, vaultKey, writeJar, type StoredCookie } from "./vault.js";
+import { captureStorage, restoreStorage } from "./storage.js";
 
 /**
  * One interactive login, driven by polling rather than by a keypress.
@@ -39,6 +47,11 @@ export type LoginSessionOptions = {
   probe?: string;
   /** Typed into the form when the persona has a stored password. */
   autofill?: { email?: string; password?: string };
+  /**
+   * Test seam. Supplying a client skips launching a browser, so the parts that decide
+   * WHAT to send can be asserted without a window opening.
+   */
+  client?: { cdp: CdpClient; kill: () => void; exited: () => Promise<void> };
 };
 
 function safePath(url: string): string | undefined {
@@ -68,6 +81,8 @@ export class LoginSession {
    * when the session expires — so they are learned here rather than guessed later.
    */
   #visited = new Set<string>();
+  /** Origins the persona already had storage for, so a re-login keeps them. */
+  #knownOrigins = new Set<string>();
   #landedAt: string | null = null;
 
   private constructor(options: LoginSessionOptions, chrome: LaunchedChrome, cdp: CdpClient) {
@@ -79,13 +94,32 @@ export class LoginSession {
   }
 
   static async start(options: LoginSessionOptions): Promise<LoginSession> {
-    const profile = mkdtempSync(join(tmpdir(), `bp-login-${options.persona}-`));
+    const profile = options.client ? null : mkdtempSync(join(tmpdir(), `bp-login-${options.persona}-`));
     // Headed, always: the daemon may be headless, Chrome cannot switch modes while
     // running, and a captcha needs a human looking at it.
-    const chrome = launchChrome({ headless: false, userDataDir: profile });
-    const cdp = new CdpClient(chrome.transport);
-    const session = new LoginSession(options, chrome, cdp);
-    (session as { profileDir?: string }).profileDir = profile;
+    const chrome =
+      options.client ??
+      (launchChrome({ headless: false, userDataDir: profile! }) as unknown as {
+        cdp: CdpClient;
+        kill: () => void;
+        exited: () => Promise<void>;
+      });
+    const cdp = options.client?.cdp ?? new CdpClient((chrome as unknown as LaunchedChrome).transport);
+    const session = new LoginSession(options, chrome as unknown as LaunchedChrome, cdp);
+    if (profile) (session as { profileDir?: string }).profileDir = profile;
+
+    // A persona holds several websites and ONE session. Signing in to the second must not
+    // cost the first: the existing jar goes into this browser before the human starts, so
+    // the capture at the end is the union rather than a replacement. It also means they
+    // arrive already signed in to everything else, which is usually what they expect.
+    const existingJar = readJar(jarPath(options.personasDir, options.persona), vaultKey(options.configDir));
+    if (existingJar.cookies.length > 0) {
+      await cdp.send("Storage.setCookies", { cookies: existingJar.cookies }).catch(() => undefined);
+    }
+    if (Object.keys(existingJar.storage).length > 0) {
+      await restoreStorage(cdp, existingJar.storage).catch(() => 0);
+    }
+    session.#knownOrigins = new Set(Object.keys(existingJar.storage));
 
     const created = await cdp.send("Target.createTarget", { url: options.url });
     session.#targetId = typeof created["targetId"] === "string" ? (created["targetId"] as string) : null;
@@ -219,7 +253,9 @@ export class LoginSession {
       const cookies = Array.isArray(result["cookies"]) ? (result["cookies"] as StoredCookie[]) : [];
 
       const appOrigin = normalizeOrigin(this.#options.url);
-      const storage = await captureStorage(this.#cdp, [...new Set([appOrigin, ...this.#visited])]);
+      const storage = await captureStorage(this.#cdp, [
+        ...new Set([appOrigin, ...this.#knownOrigins, ...this.#visited]),
+      ]);
 
       writeJar(jarPath(this.#options.personasDir, this.persona), vaultKey(this.#options.configDir), {
         version: 2,
@@ -235,17 +271,19 @@ export class LoginSession {
         (origin) => origin !== appOrigin,
       );
       // With no probe configured, where the login actually landed is the best one there is.
-      const inferredProbe =
-        existing?.accounts?.[0]?.probe ??
-        (this.#landedAt ? safePath(this.#landedAt) : undefined);
-      const accounts = existing?.accounts?.length
-        ? [{ ...existing.accounts[0]!, probe: inferredProbe }, ...existing.accounts.slice(1)]
-        : [{ origin: appOrigin, probe: inferredProbe }];
+      const current = existing ? findAccount(existing, appOrigin) : undefined;
+      const inferredProbe = current?.probe ?? (this.#landedAt ? safePath(this.#landedAt) : undefined);
+      // Only the website that was signed in to is touched; the persona's other sites keep
+      // whatever they were configured with.
+      const withAccount = upsertAccount(existing ?? { name: this.persona }, {
+        origin: appOrigin,
+        ...(inferredProbe ? { probe: inferredProbe } : {}),
+      });
 
       saveManifest(this.#options.personasDir, {
         name: this.persona,
         ...existing,
-        accounts,
+        accounts: withAccount.accounts,
         ...(authOrigins.length ? { auth_origins: authOrigins } : {}),
         ...extra,
         seeded_by: existing?.seeded_by ?? process.env["USER"],

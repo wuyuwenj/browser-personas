@@ -555,5 +555,20 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.6 — a persona is a person, not an account</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-16.</b> 59 unit tests and 43 integration tests. The manifest always held an array of accounts; the console and the API only ever touched the first one, which made the array a lie.</p>
+    <h3>The bug behind the missing feature</h3>
+    <p>Signing in to a second website would have <b>logged the persona out of the first</b>: the login ran in a throwaway browser and replaced the jar wholesale. It now starts from the persona's existing session — cookies and web storage both — so the capture at the end is a union, and the human arrives already signed in to everything else, which is what they expect anyway.</p>
+    <h3>Websites are keyed by origin, never by index</h3>
+    <p>A positional API lands the edit on the wrong site the moment a row is removed between read and write, and does it silently. Removing the last website is refused outright: an empty allowlist means "unscoped", which is the opposite of what removing the last site should mean, so deleting the persona is the honest way to do it.</p>
+    <h3>A test that proved nothing, again</h3>
+    <p>The first version of "keeps the first website's session" wrote a jar by hand and asserted it read back — which passes whether or not the merge exists, and the mutation run said so. Replacing it needed a seam: a fake CDP client, so the session's decisions can be asserted without a browser window opening. Second time a headline test has survived deleting the thing it names; the mutation pass is the only reason either was caught.</p>
+    <p>The console pauses its own live refresh while a form is open. A two-second re-render of a settings page wipes whatever is half-typed, and that is a self-inflicted wound worth naming.</p>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>

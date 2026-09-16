@@ -200,8 +200,11 @@ browser-personas console --open
 
 One page, printed with its token when the daemon starts. From it you can:
 
-- **Add a persona** — name, app URL, username, the path that proves you are signed in,
-  environment, read-only level, and whether it is exclusive.
+- **Add a persona** — a name and one website is enough.
+- **Add more websites to it.** A persona is a person, and a person signs in to more than
+  one site. Each website has its own row with its own sign-in, and one session covers them
+  all. Every website is editable on its own; removing one leaves the rest alone.
+- **Edit the persona itself** — description, environment, read-only level, exclusivity.
 - **Log in, however that site wants.** Press the button, a browser window opens, and you
   sign in with a password form, Google, GitHub, SSO, a magic link, two factors — anything.
   The page polls your app through the very cookies the login is producing, so the green
@@ -212,6 +215,28 @@ One page, printed with its token when the daemon starts. From it you can:
 - **Edit or delete.** Deleting is refused while an agent holds the persona, naming them.
 
 The CLI still does all of it, unchanged, because scripts and CI need it.
+
+### One persona, several websites
+
+```yaml
+name: katy
+accounts:
+  - origin: https://app.example.com
+    username: katy@example.com
+    role: homeowner
+    probe: /my-homes
+  - origin: https://admin.example.com
+    username: katy@admin
+    role: admin
+    probe: /dashboard
+```
+
+Websites are addressed by URL, never by position — an index-keyed edit lands on the wrong
+site the moment a row is removed between read and write, and does it silently. The
+persona's websites are also its fence: it can reach all of them and nothing else.
+
+Signing in to the second site does not cost you the first. The login browser starts from
+the persona's existing session, so what it captures at the end is the union.
 
 ### Any site, any login method
 
@@ -284,8 +309,8 @@ you, the same as it can read Chrome's. The isolation here is between well-behave
 
 ## Status
 
-v0.5: the proxy, tab ownership, personas that survive any login method, the registry MCP,
-and the console. Still ahead are per-owner audit logs and rate limits, IndexedDB for the
+v0.6: the proxy, tab ownership, personas that hold several websites and survive any login
+method, the registry MCP, and the console. Still ahead are per-owner audit logs and rate limits, IndexedDB for the
 few SDKs that use it, and Linux vault coverage. The design and a per-milestone record of what the
 real browser taught us are in [`docs/design.html`](docs/design.html).
 

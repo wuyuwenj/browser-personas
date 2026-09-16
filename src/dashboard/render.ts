@@ -77,6 +77,16 @@ export function renderConsole(
   a { color:var(--accent) }
   .muted { color:var(--muted) }
   .err { color:var(--bad); font-size:13px; margin-top:8px }
+  .sites { margin:10px 0 0; border-top:1px solid var(--line) }
+  .site { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:9px 0; border-bottom:1px solid var(--line) }
+  .site:last-child { border-bottom:0 }
+  .site .who { font-size:13px; color:var(--muted); flex:1 1 200px; min-width:0 }
+  .site .who b { color:var(--ink); font-weight:500 }
+  .site .acts { display:flex; gap:6px; flex-wrap:wrap }
+  .site button { padding:3px 9px; font-size:12.5px }
+  .inline { padding:12px 0 4px; border-bottom:1px solid var(--line) }
+  .inline .grid { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px }
+  .paused { color:var(--warn); font-size:12.5px; margin-top:8px }
   footer { margin-top:34px; color:var(--muted); font-size:12.5px }
 </style>
 <main>
@@ -85,12 +95,13 @@ export function renderConsole(
 
   <h2>Personas</h2>
   <div id="personas"></div>
+  <p class="paused" id="paused" hidden>Live updates are paused while you are editing.</p>
 
   <h2>Add a persona</h2>
   <form id="new">
     <div class="grid">
       <div><label for="f-name">Name</label><input id="f-name" placeholder="katy" autocomplete="off"></div>
-      <div><label for="f-origin">App URL</label><input id="f-origin" placeholder="http://localhost:3005" autocomplete="off"></div>
+      <div><label for="f-origin">First website</label><input id="f-origin" placeholder="http://localhost:3005" autocomplete="off"></div>
       <div><label for="f-username">Who is this (optional)</label><input id="f-username" placeholder="katy@example.com" autocomplete="off"></div>
       <div><label for="f-probe">Signed-in path (optional)</label><input id="f-probe" placeholder="learned from your login" autocomplete="off"></div>
       <div><label for="f-env">Environment</label><input id="f-env" placeholder="staging" autocomplete="off"></div>
@@ -112,8 +123,9 @@ export function renderConsole(
        sign-in leaves behind is captured: cookies for every origin involved, and the tokens apps keep
        in local storage. The provider origins are remembered too, so the persona can re-authenticate
        later without you widening anything by hand.</p>
-    <p class="hint">The app URL is the fence: outside its own origins, this persona cannot be
-       navigated anywhere. A stored password only buys the <b>Fill the form</b> button and is useless
+    <p class="hint">A persona can hold several websites — add the rest from its card, and one
+       sign-in session covers them all. Its websites are also its fence: outside them, this persona
+       cannot be navigated anywhere. A stored password only buys the <b>Fill the form</b> button and is useless
        for OAuth, so leave it blank unless the site has a plain password form you re-enter often.</p>
     <div class="row"><button class="primary" id="create" type="submit">Create persona</button></div>
     <div class="err" id="new-err" hidden></div>
@@ -130,6 +142,8 @@ const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let state = ${initial};
 let busy = null;
+/** Which inline form is open. Refresh pauses while one is, so typing is never clobbered. */
+let open = { kind: null, persona: null, origin: null };
 
 async function api(method, path, body) {
   const res = await fetch(path + (path.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN), {
@@ -144,6 +158,54 @@ async function api(method, path, body) {
 
 function loginFor(name) { return (state.logins || []).find((l) => l.persona === name); }
 
+function siteRow(p, a) {
+  const editing = open.kind === "site" && open.persona === p.name && open.origin === a.origin;
+  if (editing) return inlineSiteForm(p, a);
+  const who = [a.username ? "<b>" + esc(a.username) + "</b>" : "", a.role ? esc(a.role) : "",
+               a.probe ? "signed-in path <code>" + esc(a.probe) + "</code>" : ""].filter(Boolean).join(" · ");
+  return '<div class="site">' +
+    '<div class="who"><code>' + esc(a.origin) + '</code>' + (who ? '<br>' + who : "") + '</div>' +
+    '<div class="acts">' +
+      '<button data-act="login" data-name="' + esc(p.name) + '" data-origin="' + esc(a.origin) + '">Log in</button>' +
+      '<button data-act="edit-site" data-name="' + esc(p.name) + '" data-origin="' + esc(a.origin) + '">Edit</button>' +
+      '<button class="danger" data-act="remove-site" data-name="' + esc(p.name) + '" data-origin="' + esc(a.origin) + '">Remove</button>' +
+    '</div></div>';
+}
+
+function inlineSiteForm(p, a) {
+  const v = (x) => esc(x || "");
+  const isNew = !a;
+  return '<div class="inline" data-form="site" data-name="' + esc(p.name) + '" data-origin="' + v(a && a.origin) + '">' +
+    '<div class="grid">' +
+      '<div><label>Website URL</label><input data-f="origin" value="' + v(a && a.origin) + '" placeholder="https://app.example.com"' + (isNew ? "" : " readonly") + '></div>' +
+      '<div><label>Who is this</label><input data-f="username" value="' + v(a && a.username) + '" placeholder="katy@example.com"></div>' +
+      '<div><label>Role</label><input data-f="role" value="' + v(a && a.role) + '" placeholder="homeowner"></div>' +
+      '<div><label>Signed-in path</label><input data-f="probe" value="' + v(a && a.probe) + '" placeholder="learned from your login"></div>' +
+    '</div>' +
+    '<div class="row"><button class="primary" data-act="save-site" data-name="' + esc(p.name) + '">Save website</button>' +
+    '<button data-act="cancel-edit">Cancel</button></div>' +
+    (isNew ? "" : '<p class="hint">The URL is the website&rsquo;s identity here, so it cannot be edited. Remove it and add it again to change it.</p>') +
+    '</div>';
+}
+
+function inlinePersonaForm(p) {
+  const sel = (v) => (p.readOnly === v ? " selected" : "");
+  return '<div class="inline" data-form="persona" data-name="' + esc(p.name) + '">' +
+    '<div class="grid">' +
+      '<div><label>Description</label><input data-f="description" value="' + esc(p.description || "") + '"></div>' +
+      '<div><label>Environment</label><input data-f="env" value="' + esc(p.env || "") + '"></div>' +
+      '<div><label>Read-only</label><select data-f="read_only">' +
+        '<option value=""' + (p.readOnly ? "" : " selected") + '>off</option>' +
+        '<option value="strict"' + sel("strict") + '>strict</option>' +
+        '<option value="inspect"' + sel("inspect") + '>inspect</option>' +
+        '<option value="cooperative"' + sel("cooperative") + '>cooperative</option>' +
+      '</select></div>' +
+      '<label class="check"><input type="checkbox" data-f="exclusive"' + (p.exclusive ? " checked" : "") + '> One agent at a time</label>' +
+    '</div>' +
+    '<div class="row"><button class="primary" data-act="save-persona" data-name="' + esc(p.name) + '">Save persona</button>' +
+    '<button data-act="cancel-edit">Cancel</button></div></div>';
+}
+
 function personaCard(p) {
   const login = loginFor(p.name);
   const holders = p.holders.length === 0
@@ -155,7 +217,7 @@ function personaCard(p) {
 
   const signedIn = login ? login.signedIn : null;
   const dot = signedIn === null ? "unknown" : signedIn ? "on" : "off";
-  const dotTitle = signedIn === null ? "login state unknown — press Check" : signedIn ? "signed in" : "not signed in";
+  const dotTitle = signedIn === null ? "login state unknown — press Log in on a website" : signedIn ? "signed in" : "not signed in";
 
   const badges = [
     p.env ? '<span class="badge">' + esc(p.env) + '</span>' : "",
@@ -165,7 +227,7 @@ function personaCard(p) {
   ].join("");
 
   const panel = login && !login.finished
-    ? '<div class="login"><b>Signing in…</b> finish in the browser window that opened.' +
+    ? '<div class="login"><b>Signing in to ' + esc(login.url) + '…</b> finish in the browser window that opened.' +
       '<div class="url">now at ' + esc(login.currentUrl) + '</div>' +
       (login.probeStatus !== null ? '<div class="url">' + esc(login.probeUrl || "") + ' &rarr; ' + login.probeStatus + '</div>' : "") +
       '<div class="row">' +
@@ -176,18 +238,23 @@ function personaCard(p) {
       '</div></div>'
     : "";
 
+  const addingSite = open.kind === "site" && open.persona === p.name && open.origin === "";
+  const editingPersona = open.kind === "persona" && open.persona === p.name;
+
   return '<article>' +
     '<h3><span class="dot ' + dot + '" title="' + dotTitle + '"></span>' + esc(p.name) + badges + '</h3>' +
     (p.description ? '<p>' + esc(p.description) + '</p>' : "") +
-    (p.origins.length ? '<div class="scope">may reach ' + p.origins.map((o) => '<code>' + esc(o) + '</code>').join(", ") + '</div>' : "") +
     (p.authOrigins && p.authOrigins.length
       ? '<div class="scope">signs in through ' + p.authOrigins.map((o) => '<code>' + esc(o) + '</code>').join(", ") + '</div>'
       : "") +
     '<div class="holders">' + holders + '</div>' +
+    (editingPersona ? inlinePersonaForm(p) : "") +
+    '<div class="sites">' + (p.accounts || []).map((a) => siteRow(p, a)).join("") +
+      (addingSite ? inlineSiteForm(p, null) : "") + '</div>' +
     '<div class="row">' +
-      '<button data-act="login" data-name="' + esc(p.name) + '">Log in</button>' +
-      '<button data-act="check" data-name="' + esc(p.name) + '">Check</button>' +
-      '<button class="danger" data-act="delete" data-name="' + esc(p.name) + '">Delete</button>' +
+      '<button data-act="add-site" data-name="' + esc(p.name) + '">Add website</button>' +
+      '<button data-act="edit-persona" data-name="' + esc(p.name) + '">Edit persona</button>' +
+      '<button class="danger" data-act="delete" data-name="' + esc(p.name) + '">Delete persona</button>' +
     '</div>' + panel +
     '</article>';
 }
@@ -209,6 +276,8 @@ function render() {
   document.getElementById("sub").textContent =
     "One Chrome on port " + state.port + " · " + (state.chromeAlive ? "running" : "not running") +
     " · " + state.owners.filter((o) => o.connected).length + " agent(s) connected";
+  const pausedNote = document.getElementById("paused");
+  if (pausedNote) pausedNote.hidden = !open.kind;
   document.getElementById("personas").innerHTML =
     state.personas.length
       ? state.personas.map(personaCard).join("")
@@ -217,31 +286,60 @@ function render() {
     state.owners.length ? state.owners.map(agentCard).join("") : '<article class="muted">No agent has connected yet.</article>';
 }
 
-async function refresh() {
+async function refresh(force) {
+  // A two-second re-render would wipe whatever is half-typed in an open form.
+  if (open.kind && !force) return;
   try {
     state = await api("GET", "/api/state");
     render();
   } catch { /* the daemon may be restarting; the next tick will catch up */ }
 }
 
+function formValues(node) {
+  const out = {};
+  for (const el of node.querySelectorAll("[data-f]")) {
+    out[el.dataset.f] = el.type === "checkbox" ? el.checked : el.value.trim();
+  }
+  return out;
+}
+
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-act]");
   if (!button || busy) return;
-  const { act, name } = button.dataset;
+  const { act, name, origin } = button.dataset;
+
+  // Opening and closing a form is local; it must not wait on the network.
+  if (act === "edit-site") { open = { kind: "site", persona: name, origin }; render(); return; }
+  if (act === "add-site") { open = { kind: "site", persona: name, origin: "" }; render(); return; }
+  if (act === "edit-persona") { open = { kind: "persona", persona: name, origin: null }; render(); return; }
+  if (act === "cancel-edit") { open = { kind: null, persona: null, origin: null }; await refresh(true); return; }
+
   busy = act;
   button.disabled = true;
   try {
-    if (act === "login") await api("POST", "/api/personas/" + encodeURIComponent(name) + "/login");
+    if (act === "save-site") {
+      const values = formValues(button.closest("[data-form]"));
+      await api("PUT", "/api/personas/" + encodeURIComponent(name) + "/accounts", values);
+      open = { kind: null, persona: null, origin: null };
+    }
+    if (act === "save-persona") {
+      const values = formValues(button.closest("[data-form]"));
+      await api("PATCH", "/api/personas/" + encodeURIComponent(name), values);
+      open = { kind: null, persona: null, origin: null };
+    }
+    if (act === "remove-site" && confirm("Remove " + origin + " from " + name + "?")) {
+      await api("DELETE", "/api/personas/" + encodeURIComponent(name) + "/accounts", { origin });
+    }
+    if (act === "login") await api("POST", "/api/personas/" + encodeURIComponent(name) + "/login", { origin });
     if (act === "autofill") await api("POST", "/api/personas/" + encodeURIComponent(name) + "/login/autofill", {});
     if (act === "finish") await api("POST", "/api/personas/" + encodeURIComponent(name) + "/login/finish", {});
     if (act === "cancel") await api("DELETE", "/api/personas/" + encodeURIComponent(name) + "/login");
-    if (act === "check") await api("POST", "/api/personas/" + encodeURIComponent(name) + "/login");
     if (act === "delete" && confirm('Delete "' + name + '" and shred its saved login?')) {
       await api("DELETE", "/api/personas/" + encodeURIComponent(name));
     }
   } catch (err) { alert(err.message); }
   busy = null;
-  await refresh();
+  await refresh(true);
 });
 
 document.getElementById("new").addEventListener("submit", async (event) => {
@@ -263,7 +361,7 @@ document.getElementById("new").addEventListener("submit", async (event) => {
     });
     for (const id of ["f-name","f-origin","f-username","f-probe","f-env","f-desc","f-pw"]) document.getElementById(id).value = "";
     document.getElementById("f-excl").checked = false;
-    await refresh();
+    await refresh(true);
   } catch (e) { err.textContent = e.message; err.hidden = false; }
 });
 
