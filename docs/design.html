@@ -599,5 +599,19 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.8.1 — the console, redrawn</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-16.</b> Presentation only: every id, every <code>data-*</code> hook and the whole script are unchanged, and the 94 console-facing tests pass untouched.</p>
+    <ul>
+      <li><b>No web fonts, on purpose.</b> This page holds credentials and answers on loopback; it must never make a request to anyone. The system face carries prose and a mono face carries every identifier — origins, owner ids, chips — which is the vernacular of the thing being managed.</li>
+      <li><b>Two columns.</b> Personas are the objects you edit; agents are live state you glance at. They no longer compete in one column.</li>
+      <li><b>The form is quiet.</b> Two paragraphs of explanation moved under a disclosure; only the one sentence that matters stays visible.</li>
+      <li><b>Hairlines and one accent</b>, semantic colour reserved for login state and restrictions. Nothing is a rounded tile with a shadow.</li>
+    </ul>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>

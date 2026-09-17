@@ -1,12 +1,17 @@
 import type { DaemonStatus } from "../proxy/status.js";
 
 /**
- * The console: one page, no build step, no dependencies.
+ * The console: one page, no build step, no dependencies, no network requests of its own.
  *
  * Server-rendered shell plus a small script that polls `/api/state`. The lists re-render
  * from state; the forms are never touched by the renderer, so typing into one is not
  * interrupted by a refresh — which is exactly how a naive full-page reload ruins a
  * settings page.
+ *
+ * No web fonts, deliberately. This page holds credentials and answers on loopback; it
+ * should never make a request to anyone. The system UI face carries the prose and a mono
+ * face carries every identifier — origins, owner ids, chips — which is the vernacular of
+ * the thing it manages.
  */
 export function renderConsole(
   status: DaemonStatus,
@@ -24,115 +29,202 @@ export function renderConsole(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>browser-personas</title>
 <style>
-  :root { color-scheme: light dark; --bg:#fbfbfc; --card:#fff; --ink:#16181d; --muted:#6b7280;
-          --line:#e3e6ea; --accent:#2b6a8c; --warn:#a86a12; --good:#2f7a4d; --bad:#a4343a;
-          --field:#fff; }
+  :root {
+    color-scheme: light dark;
+    --ground:#f4f6f9; --panel:#ffffff; --well:#eef1f5;
+    --ink:#151a21; --ink-2:#4d5766; --ink-3:#7a8494;
+    --line:#dfe4ea; --line-2:#eceff3;
+    --accent:#1d6b8a; --accent-ink:#ffffff; --accent-soft:#e4eff4;
+    --good:#1f8a4c; --good-soft:#e3f2e8;
+    --warn:#b7791f; --warn-soft:#faf0dc;
+    --bad:#b3373f;  --bad-soft:#f9e6e7;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#101317; --card:#171b21; --ink:#e6e9ee; --muted:#8b94a3; --line:#272d36;
-            --accent:#6fb0d2; --warn:#e0a656; --good:#6fc48f; --bad:#e08c90; --field:#0e1116; }
+    :root {
+      --ground:#0c1015; --panel:#131920; --well:#0f141a;
+      --ink:#e6ebf1; --ink-2:#a9b3c1; --ink-3:#7d8797;
+      --line:#232b36; --line-2:#1a212a;
+      --accent:#6cb4d3; --accent-ink:#0b1a22; --accent-soft:#16262f;
+      --good:#67c48a; --good-soft:#12261a;
+      --warn:#e0a656; --warn-soft:#2a2113;
+      --bad:#e08a90;  --bad-soft:#2b171a;
+    }
   }
   * { box-sizing:border-box }
-  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 ui-sans-serif,system-ui,sans-serif }
-  main { max-width:940px; margin:0 auto; padding:32px 20px 72px }
-  h1 { font-size:22px; margin:0 0 4px; letter-spacing:-.01em }
-  .sub { color:var(--muted); margin:0 0 26px; font-size:14px }
-  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted);
-       margin:30px 0 10px; font-weight:600 }
-  article { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:14px 16px; margin-bottom:10px }
-  article h3 { font-size:15px; margin:0 0 6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap }
-  article p { margin:0 0 6px; color:var(--muted); font-size:14px }
-  .scope,.holders { font-size:13px; color:var(--muted) }
-  .holders { margin-top:6px }
-  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px;
-         background:color-mix(in srgb,var(--line) 60%,transparent); padding:1px 5px; border-radius:3px }
-  .badge { font-size:11px; font-weight:500; letter-spacing:.03em; text-transform:uppercase;
-           border:1px solid var(--line); border-radius:3px; padding:1px 6px; color:var(--muted) }
-  .badge.excl { color:var(--accent); border-color:var(--accent) }
-  .badge.ro { color:var(--warn); border-color:var(--warn) }
-  .badge.key { color:var(--warn); border-color:var(--warn) }
-  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex:0 0 auto }
-  .dot.on { background:var(--good) } .dot.off { background:var(--bad) } .dot.unknown { background:var(--muted) }
+  html { background:var(--ground) }
+  body { margin:0; background:var(--ground); color:var(--ink); font:14px/1.5 var(--sans);
+         -webkit-font-smoothing:antialiased }
+  a { color:var(--accent) }
+  code { font-family:var(--mono); font-size:12px; color:var(--ink);
+         background:var(--well); border:1px solid var(--line-2); padding:1px 5px; border-radius:3px }
+
+  /* ---- shell ---------------------------------------------------------- */
+  .top { border-bottom:1px solid var(--line); background:var(--panel) }
+  .top-in { max-width:1120px; margin:0 auto; padding:14px 24px; display:flex; align-items:baseline;
+            gap:16px; flex-wrap:wrap }
+  .brand { font-family:var(--mono); font-size:15px; font-weight:600; letter-spacing:-.01em; margin:0 }
+  .brand span { color:var(--ink-3); font-weight:500 }
+  .sub { margin:0; font-family:var(--mono); font-size:12px; color:var(--ink-3) }
+  main { max-width:1120px; margin:0 auto; padding:26px 24px 72px;
+         display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:28px; align-items:start }
+  @media (max-width:980px) { main { grid-template-columns:1fr } }
+  h2 { font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.08em;
+       text-transform:uppercase; color:var(--ink-3); margin:0 0 10px }
+  section + section, .stack > * + * { margin-top:26px }
+  .stack { display:block }
+
+  /* ---- cards ---------------------------------------------------------- */
+  article { background:var(--panel); border:1px solid var(--line); border-radius:4px; margin-bottom:10px }
+  article.muted { padding:16px 18px; color:var(--ink-3) }
+  .card-h { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:14px 18px 10px }
+  article h3 { font-size:16px; font-weight:600; letter-spacing:-.01em; margin:0; display:flex;
+               align-items:center; gap:10px; flex-wrap:wrap }
+  .chips { display:flex; gap:6px; flex-wrap:wrap }
+  .badge { font-family:var(--mono); font-size:10.5px; font-weight:500; letter-spacing:.06em;
+           text-transform:uppercase; border:1px solid var(--line); border-radius:3px; padding:2px 6px;
+           color:var(--ink-2); background:var(--well) }
+  .badge.excl { color:var(--accent); border-color:var(--accent); background:var(--accent-soft) }
+  .badge.ro   { color:var(--warn);   border-color:var(--warn);   background:var(--warn-soft) }
+  .badge.key  { color:var(--warn);   border-color:var(--warn);   background:var(--warn-soft) }
+  .dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; box-shadow:0 0 0 3px var(--panel) inset,
+         0 0 0 1px var(--line) }
+  .dot.on { background:var(--good); box-shadow:0 0 0 1px var(--good) }
+  .dot.off { background:var(--bad); box-shadow:0 0 0 1px var(--bad) }
+  .dot.unknown { background:var(--ink-3); box-shadow:0 0 0 1px var(--ink-3) }
+  article > p { margin:0; padding:0 18px 10px; color:var(--ink-2) }
+  .scope, .holders { padding:0 18px; font-size:12.5px; color:var(--ink-3) }
+  .holders { padding-bottom:12px }
+  .scope + .holders { padding-top:4px }
   .warn { color:var(--warn) }
-  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px }
-  button { font:inherit; font-size:13px; padding:5px 11px; border-radius:5px; border:1px solid var(--line);
-           background:var(--card); color:var(--ink); cursor:pointer }
+  .muted { color:var(--ink-3) }
+
+  /* ---- websites ------------------------------------------------------- */
+  .sites { border-top:1px solid var(--line) }
+  .site { display:flex; align-items:center; gap:12px; padding:10px 18px; border-bottom:1px solid var(--line-2) }
+  .site:last-child { border-bottom:0 }
+  .site .who { flex:1 1 220px; min-width:0; font-size:12.5px; color:var(--ink-3); line-height:1.45 }
+  .site .who code { font-size:12.5px; background:none; border:0; padding:0; color:var(--ink) }
+  .site .who b { color:var(--ink-2); font-weight:500 }
+  .site .acts { display:flex; gap:6px; flex-wrap:wrap; margin-left:auto }
+  .site .acts button { padding:3px 9px; font-size:12px }
+
+  /* ---- toolbars & buttons ---------------------------------------------- */
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+  article > .row { padding:10px 18px 12px; border-top:1px solid var(--line-2); background:var(--well) }
+  button { font:inherit; font-size:12.5px; padding:5px 11px; border-radius:3px; border:1px solid var(--line);
+           background:var(--panel); color:var(--ink); cursor:pointer; line-height:1.3 }
   button:hover { border-color:var(--accent); color:var(--accent) }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff }
-  button.primary:hover { opacity:.9; color:#fff }
+  button:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink) }
+  button.primary:hover { opacity:.92; color:var(--accent-ink) }
   button.danger:hover { border-color:var(--bad); color:var(--bad) }
   button:disabled { opacity:.45; cursor:default }
-  form { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:16px }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px }
-  label { display:block; font-size:12.5px; color:var(--muted); margin-bottom:4px }
-  input,select { width:100%; font:inherit; font-size:14px; padding:6px 9px; border-radius:5px;
-                 border:1px solid var(--line); background:var(--field); color:var(--ink) }
-  .check { display:flex; align-items:center; gap:7px; font-size:13.5px; color:var(--ink); margin-top:22px }
-  .check input { width:auto }
-  .hint { font-size:12.5px; color:var(--muted); margin:10px 0 0 }
-  .login { border-left:3px solid var(--accent); background:color-mix(in srgb,var(--accent) 8%,transparent);
-           border-radius:0 5px 5px 0; padding:10px 13px; margin-top:10px; font-size:13.5px }
-  .login .url { color:var(--muted); word-break:break-all }
-  ul { margin:8px 0 0; padding-left:18px; font-size:13.5px } li { margin-bottom:3px }
-  li span { color:var(--muted) }
-  a { color:var(--accent) }
-  .muted { color:var(--muted) }
-  .err { color:var(--bad); font-size:13px; margin-top:8px }
-  .sites { margin:10px 0 0; border-top:1px solid var(--line) }
-  .site { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:9px 0; border-bottom:1px solid var(--line) }
-  .site:last-child { border-bottom:0 }
-  .site .who { font-size:13px; color:var(--muted); flex:1 1 200px; min-width:0 }
-  .site .who b { color:var(--ink); font-weight:500 }
-  .site .acts { display:flex; gap:6px; flex-wrap:wrap }
-  .site button { padding:3px 9px; font-size:12.5px }
-  .inline { padding:12px 0 4px; border-bottom:1px solid var(--line) }
-  .inline .grid { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px }
-  .paused { color:var(--warn); font-size:12.5px; margin-top:8px }
-  footer { margin-top:34px; color:var(--muted); font-size:12.5px }
+
+  /* ---- forms ---------------------------------------------------------- */
+  form { background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:16px 18px }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px 14px }
+  label { display:block; font-size:12px; color:var(--ink-3); margin-bottom:4px }
+  input, select { width:100%; font:inherit; font-size:13.5px; padding:6px 9px; border-radius:3px;
+                  border:1px solid var(--line); background:var(--well); color:var(--ink) }
+  input:focus, select:focus { outline:none; border-color:var(--accent); background:var(--panel) }
+  input[readonly] { color:var(--ink-3) }
+  .check { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink); align-self:end;
+           padding-bottom:7px }
+  .check input { width:auto; margin:0 }
+  .hint { font-size:12.5px; color:var(--ink-3); margin:10px 0 0; line-height:1.5 }
+  details { margin-top:12px; border-top:1px solid var(--line-2); padding-top:10px }
+  summary { cursor:pointer; font-size:12.5px; color:var(--accent); list-style:none; user-select:none }
+  summary::-webkit-details-marker { display:none }
+  summary::before { content:"\\25B8\\00a0"; color:var(--ink-3) }
+  details[open] summary::before { content:"\\25BE\\00a0" }
+  .inline { padding:12px 18px 10px; border-bottom:1px solid var(--line-2); background:var(--well) }
+  .inline .grid { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px 12px }
+  .inline .row { margin-top:10px }
+  .err { color:var(--bad); font-size:12.5px; margin-top:10px }
+  .paused { font-family:var(--mono); font-size:11.5px; color:var(--warn); margin:6px 0 0 }
+
+  /* ---- login strip ---------------------------------------------------- */
+  .login { margin:0; padding:12px 18px 12px 15px; border-top:1px solid var(--line);
+           border-left:3px solid var(--accent); background:var(--accent-soft); font-size:13px }
+  .login .url { font-family:var(--mono); font-size:11.5px; color:var(--ink-2); word-break:break-all; margin-top:3px }
+  .login .row { margin-top:10px }
+
+  /* ---- agents rail ---------------------------------------------------- */
+  .rail article { padding:12px 14px }
+  .rail article h3 { font-size:13px }
+  .rail article h3 code { font-size:12.5px }
+  .rail .scope { padding:6px 0 0; font-size:12px }
+  .rail ul { list-style:none; margin:8px 0 0; padding:0; border-top:1px solid var(--line-2) }
+  .rail li { display:flex; gap:8px; align-items:baseline; padding:6px 0; border-bottom:1px solid var(--line-2);
+             font-size:12px; min-width:0 }
+  .rail li:last-child { border-bottom:0 }
+  .rail li a { font-family:var(--mono); font-size:11px; flex:0 0 auto; text-decoration:none;
+               border:1px solid var(--line); border-radius:3px; padding:1px 6px; color:var(--accent) }
+  .rail li a:hover { border-color:var(--accent) }
+  .rail li span { color:var(--ink-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0 }
+  .rail li.muted { color:var(--ink-3) }
+  footer { grid-column:1 / -1; margin-top:14px; padding-top:14px; border-top:1px solid var(--line);
+           font-size:12px; color:var(--ink-3); line-height:1.5 }
 </style>
-<main>
-  <h1>browser-personas</h1>
+<header class="top"><div class="top-in">
+  <h1 class="brand">browser-personas<span> / console</span></h1>
   <p class="sub" id="sub">One Chrome on port ${port}</p>
+</div></header>
+<main>
+  <div class="stack">
+    <section>
+      <h2>Personas</h2>
+      <div id="personas"></div>
+      <p class="paused" id="paused" hidden>Live updates are paused while you are editing.</p>
+    </section>
 
-  <h2>Personas</h2>
-  <div id="personas"></div>
-  <p class="paused" id="paused" hidden>Live updates are paused while you are editing.</p>
+    <section>
+      <h2>Add a persona</h2>
+      <form id="new">
+        <div class="grid">
+          <div><label for="f-name">Name</label><input id="f-name" placeholder="katy" autocomplete="off"></div>
+          <div><label for="f-origin">First website</label><input id="f-origin" placeholder="http://localhost:3005" autocomplete="off"></div>
+          <div><label for="f-username">Who is this (optional)</label><input id="f-username" placeholder="katy@example.com" autocomplete="off"></div>
+          <div><label for="f-probe">Signed-in path (optional)</label><input id="f-probe" placeholder="learned from your login" autocomplete="off"></div>
+          <div><label for="f-env">Environment</label><input id="f-env" placeholder="staging" autocomplete="off"></div>
+          <div><label for="f-ro">Read-only</label>
+            <select id="f-ro">
+              <option value="">off</option>
+              <option value="strict">strict — GET only</option>
+              <option value="inspect">inspect — plus reads sent as POST</option>
+              <option value="cooperative">cooperative — mark writes, app decides</option>
+            </select>
+          </div>
+          <div><label for="f-desc">Description</label><input id="f-desc" placeholder="Owner with an active renewal" autocomplete="off"></div>
+          <div><label for="f-pw">Password (rarely needed)</label><input id="f-pw" type="password" autocomplete="new-password"></div>
+          <label class="check"><input type="checkbox" id="f-excl"> One agent at a time</label>
+        </div>
+        <p class="hint"><b>Only the name and the first website are required.</b> Everything else is learned from a real sign-in.</p>
+        <div class="row" style="margin-top:12px"><button class="primary" id="create" type="submit">Create persona</button></div>
+        <div class="err" id="new-err" hidden></div>
+        <details>
+          <summary>How sign-in works</summary>
+          <p class="hint">Press <b>Log in</b> on a website and sign in however that site wants — a password form, Google,
+             GitHub, SSO, a magic link, two factors. The login browser is unfenced, so the redirect to your identity
+             provider works, and everything the sign-in leaves behind is captured: cookies for every origin involved,
+             and the tokens apps keep in local storage. The provider origins are remembered too, so the persona can
+             re-authenticate later without you widening anything by hand. It saves itself the moment the sign-in is
+             really done.</p>
+          <p class="hint">A persona can hold several websites — add the rest from its card, and one sign-in session
+             covers them all. Its websites are also its fence: outside them, this persona cannot be navigated
+             anywhere. A stored password only buys the <b>Fill the form</b> button and is useless for OAuth, so
+             leave it blank unless the site has a plain password form you re-enter often.</p>
+        </details>
+      </form>
+    </section>
+  </div>
 
-  <h2>Add a persona</h2>
-  <form id="new">
-    <div class="grid">
-      <div><label for="f-name">Name</label><input id="f-name" placeholder="katy" autocomplete="off"></div>
-      <div><label for="f-origin">First website</label><input id="f-origin" placeholder="http://localhost:3005" autocomplete="off"></div>
-      <div><label for="f-username">Who is this (optional)</label><input id="f-username" placeholder="katy@example.com" autocomplete="off"></div>
-      <div><label for="f-probe">Signed-in path (optional)</label><input id="f-probe" placeholder="learned from your login" autocomplete="off"></div>
-      <div><label for="f-env">Environment</label><input id="f-env" placeholder="staging" autocomplete="off"></div>
-      <div><label for="f-ro">Read-only</label>
-        <select id="f-ro">
-          <option value="">off</option>
-          <option value="strict">strict — GET only</option>
-          <option value="inspect">inspect — plus reads sent as POST</option>
-          <option value="cooperative">cooperative — mark writes, app decides</option>
-        </select>
-      </div>
-      <div><label for="f-desc">Description</label><input id="f-desc" placeholder="Owner with an active renewal" autocomplete="off"></div>
-      <div><label for="f-pw">Password (rarely needed)</label><input id="f-pw" type="password" autocomplete="new-password"></div>
-      <label class="check"><input type="checkbox" id="f-excl"> One agent at a time</label>
-    </div>
-    <p class="hint"><b>Only the name and the app URL are required.</b> Press <b>Log in</b> and sign in
-       however that site wants — a password form, Google, GitHub, SSO, a magic link, two factors. The
-       login browser is unfenced, so the redirect to your identity provider works, and everything the
-       sign-in leaves behind is captured: cookies for every origin involved, and the tokens apps keep
-       in local storage. The provider origins are remembered too, so the persona can re-authenticate
-       later without you widening anything by hand.</p>
-    <p class="hint">A persona can hold several websites — add the rest from its card, and one
-       sign-in session covers them all. Its websites are also its fence: outside them, this persona
-       cannot be navigated anywhere. A stored password only buys the <b>Fill the form</b> button and is useless
-       for OAuth, so leave it blank unless the site has a plain password form you re-enter often.</p>
-    <div class="row"><button class="primary" id="create" type="submit">Create persona</button></div>
-    <div class="err" id="new-err" hidden></div>
-  </form>
-
-  <h2>Agents</h2>
-  <div id="agents"></div>
+  <aside class="rail">
+    <h2>Agents</h2>
+    <div id="agents"></div>
+  </aside>
 
   <footer>Watch links open Chrome&rsquo;s own DevTools against a tab without taking it from the agent.
     This page is reachable only from this machine, and only with the token in its URL.</footer>
@@ -253,7 +345,8 @@ function personaCard(p) {
   const editingPersona = open.kind === "persona" && open.persona === p.name;
 
   return '<article>' +
-    '<h3><span class="dot ' + dot + '" title="' + dotTitle + '"></span>' + esc(p.name) + badges + '</h3>' +
+    '<div class="card-h"><h3><span class="dot ' + dot + '" title="' + dotTitle + '"></span>' + esc(p.name) + '</h3>' +
+      '<div class="chips">' + badges + '</div></div>' +
     (p.description ? '<p>' + esc(p.description) + '</p>' : "") +
     (p.authOrigins && p.authOrigins.length
       ? '<div class="scope">signs in through ' + p.authOrigins.map((o) => '<code>' + esc(o) + '</code>').join(", ") + '</div>'
@@ -276,7 +369,7 @@ function agentCard(o) {
     : o.tabs.map((t) =>
         '<li><a href="devtools://devtools/bundled/inspector.html?ws=' +
         esc(location.hostname + ":" + location.port + "/devtools/page/" + t.id) + '">watch</a> ' +
-        '<span>' + esc(t.url || "about:blank") + '</span></li>').join("");
+        '<span title="' + esc(t.url || "about:blank") + '">' + esc(t.url || "about:blank") + '</span></li>').join("");
   return '<article><h3><code>' + esc(o.id) + '</code>' +
     (o.connected ? "" : '<span class="badge">disconnected</span>') + '</h3>' +
     '<div class="scope">persona <code>' + esc(o.persona) + '</code></div>' +
