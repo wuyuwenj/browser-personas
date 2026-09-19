@@ -34,5 +34,5 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm add -D chrome-devtools-mcp@${{ matrix.cdp-mcp }}
+      - run: pnpm add chrome-devtools-mcp@${{ matrix.cdp-mcp }}
       - run: pnpm test:integration

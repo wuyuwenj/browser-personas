@@ -27,27 +27,11 @@ export class McpClient {
     return require.resolve("chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js");
   }
 
-  /**
-   * Start the browser-personas wrapper itself, which is what an agent actually connects
-   * to: chrome-devtools-mcp's tools re-exported, plus the persona registry.
-   */
-  static async startWrapper(options: {
-    daemonPort: number;
-    personasDir: string;
-    persona: string;
-    owner: string;
-  }): Promise<McpClient> {
+  /** The persona registry: five tools, no browser of its own. */
+  static async startRegistry(options: { daemonPort: number; personasDir: string; owner: string }): Promise<McpClient> {
     const cli = require.resolve("../../src/cli.ts");
     return McpClient.start(
-      [
-        "mcp",
-        "--port",
-        String(options.daemonPort),
-        "--persona",
-        options.persona,
-        "--owner",
-        options.owner,
-      ],
+      ["mcp", "--port", String(options.daemonPort), "--owner", options.owner],
       { entry: cli, env: { BROWSER_PERSONAS_CONFIG_DIR: join(options.personasDir, "..") } },
     );
   }

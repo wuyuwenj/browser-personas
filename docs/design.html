@@ -613,5 +613,25 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.9 — transparent mode</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-19.</b> 82 unit tests and 58 integration tests. A user who already runs chrome-devtools-mcp keeps their entry, their flags and their 29 tools; <code>init</code> routes the entry through a shim, and from the agent's side nothing changed except that tabs are isolated and one Chrome is shared.</p>
+    <h3>The wrapper is gone</h3>
+    <p>v0.3 re-exported chrome-devtools-mcp's whole toolset to carry one sentence — the co-tenancy notice. That doubled the tool schema every agent loads on every session (~17k tokens) and tied this project to each upstream tool change. The notice now lives in <code>list_personas</code>; the registry is five tools and optional. The honest cost: an agent that never asks is not told. That is the right trade against a schema everyone pays for.</p>
+    <h3>Why there has to be a shim</h3>
+    <p><code>--browserUrl</code> cannot carry a persona or an owner name, and a static config entry cannot hold a per-session id — every session using it would share one, and reclaim-after-reconnect would hand one session another's tabs. <code>browser-personas exec</code> computes the id at spawn time from the controlling terminal and runs the user's own command with the endpoint appended, stripping any browser-choosing flag they had, because a leftover <code>--browserUrl</code> would win the argument.</p>
+    <h3>Upstream is bundled</h3>
+    <p>chrome-devtools-mcp moved from a dev dependency to a real one. Resolution order is the user's own command, then the bundled copy, then <code>npx @latest</code>, and the shim says which on stderr. A version we tested beats a version we haven't; the CI matrix now tests exactly what ships. Chrome itself is never fetched quietly.</p>
+    <h3>Three defects the tests caught</h3>
+    <ul>
+      <li><b>The owner id came out as <code>tty--dev-ttys004</code></b>: the prefix was added before <code>/dev/</code> was stripped.</li>
+      <li><b><code>verify_persona</code> reported "failed" for every persona.</b> The daemon probed from <code>about:blank</code>, so the fetch to the app was cross-origin and CORS refused it. The tab now opens on the probe URL itself and asks same-origin.</li>
+      <li><b><code>list_personas</code> told agents to use <code>isolatedContext</code>.</b> chrome-devtools-mcp keeps that name internally and sends a bare <code>createBrowserContext</code> over CDP, so the proxy never sees it. The line was a lie; it now names the entry that actually works.</li>
+    </ul>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>

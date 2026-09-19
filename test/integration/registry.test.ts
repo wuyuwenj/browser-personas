@@ -1,41 +1,41 @@
 import { afterEach, describe, expect, it } from "vitest";
+import puppeteer, { type Browser } from "puppeteer-core";
 import { McpClient } from "./mcpClient.js";
 import { DOORVEST, startPersonaHarness, type PersonaHarness } from "./personaHarness.js";
 import { readNotes } from "../../src/personas/manifest.js";
 
 /**
- * The registry as an agent meets it: the wrapper exposes chrome-devtools-mcp's whole
- * toolset alongside the persona tools, and tells an agent when it is sharing a login.
+ * The registry as an agent meets it: five tools beside an untouched chrome-devtools-mcp.
+ * It has no browser of its own; everything it says comes from the daemon.
  */
 describe("the persona registry, through MCP", () => {
   let harness: PersonaHarness;
   const clients: McpClient[] = [];
+  const browsers: Browser[] = [];
 
   afterEach(async () => {
     for (const client of clients.splice(0)) await client.stop();
+    for (const browser of browsers.splice(0)) await browser.disconnect().catch(() => undefined);
     await harness?.dispose();
   });
 
-  it("offers the persona tools alongside chrome-devtools-mcp's own", async () => {
-    harness = await startPersonaHarness([
-      { name: "katy", description: "Owner with a renewal.", env: "staging", accounts: [{ origin: DOORVEST }] },
-    ]);
-    const wrapper = await McpClient.startWrapper({
-      daemonPort: harness.daemon.port,
-      personasDir: harness.personasDir,
-      persona: "katy",
-      owner: "agent-1",
-    });
-    clients.push(wrapper);
+  const registry = async (owner = "agent-1"): Promise<McpClient> => {
+    const client = await McpClient.startRegistry({ daemonPort: harness.daemon.port, personasDir: harness.personasDir, owner });
+    clients.push(client);
+    return client;
+  };
+  const hold = async (owner: string, persona: string): Promise<Browser> => {
+    const browser = await puppeteer.connect({ browserWSEndpoint: harness.wsUrl(owner, persona) });
+    browsers.push(browser);
+    return browser;
+  };
 
-    const tools = (await wrapper.request("tools/list", {})) as { tools: { name: string }[] };
-    const names = tools.tools.map((t) => t.name);
-
-    expect(names).toContain("list_personas");
-    expect(names).toContain("note_persona");
-    expect(names).toContain("new_page");
-    expect(names).toContain("list_pages");
-  }, 120_000);
+  it("offers exactly the five persona tools and nothing of upstream's", async () => {
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    const tools = (await (await registry()).request("tools/list", {})) as { tools: { name: string }[] };
+    const names = tools.tools.map((t) => t.name).sort();
+    expect(names).toEqual(["add_persona", "list_personas", "note_persona", "remove_persona", "verify_persona"]);
+  }, 90_000);
 
   it("describes each persona, its scope, and who is holding it", async () => {
     harness = await startPersonaHarness([
@@ -46,111 +46,79 @@ describe("the persona registry, through MCP", () => {
         accounts: [{ origin: DOORVEST, username: "katy@example.com", role: "homeowner" }],
       },
     ]);
-    const wrapper = await McpClient.startWrapper({
-      daemonPort: harness.daemon.port,
-      personasDir: harness.personasDir,
-      persona: "katy",
-      owner: "agent-1",
-    });
-    clients.push(wrapper);
-    await wrapper.callTool("new_page", { url: "data:text/html,<title>x</title>" });
+    await hold("agent-1", "katy");
 
-    const listing = await wrapper.callTool("list_personas");
+    const listing = await (await registry()).callTool("list_personas");
 
     expect(listing).toContain("katy");
     expect(listing).toContain("Owner with a renewal awaiting approval.");
     expect(listing).toContain("staging");
     expect(listing).toContain(DOORVEST);
     expect(listing).toContain("agent-1");
-  }, 120_000);
+    expect(listing).toContain("chrome-devtools-katy");
+  }, 90_000);
 
-  it("tells the second agent it is sharing a login, once, on its first page", async () => {
+  it("tells an agent when a persona is shared, and says what that means", async () => {
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    await hold("agent-1", "katy");
+    await hold("agent-2", "katy");
+
+    const listing = await (await registry("agent-2")).callTool("list_personas");
+
+    expect(listing).toContain("SHARED LOGIN");
+    expect(listing).toContain("agent-1");
+    expect(listing).toContain("same signed-in user");
+  }, 90_000);
+
+  it("says nothing about sharing when nobody else is on it", async () => {
+    harness = await startPersonaHarness([{ name: "solo-user", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    const listing = await (await registry()).callTool("list_personas");
+    expect(listing).toContain("in use by: nobody");
+    expect(listing).not.toContain("SHARED LOGIN");
+  }, 90_000);
+
+  it("verifies a login through the persona's own cookies, in the daemon's browser", async () => {
+    // No app to be signed in to here, so the honest answer is "not signed in" with the
+    // status the probe actually got — not a crash, and not a guess.
     harness = await startPersonaHarness([
-      { name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] },
+      { name: "katy", env: "staging", accounts: [{ origin: `http://127.0.0.1:${harness?.daemon.port ?? 1}`, probe: "/health" }] },
     ]);
-    const first = await McpClient.startWrapper({
-      daemonPort: harness.daemon.port,
-      personasDir: harness.personasDir,
-      persona: "katy",
-      owner: "agent-1",
+    const port = harness.daemon.port;
+    const { saveManifest } = await import("../../src/personas/manifest.js");
+    saveManifest(harness.personasDir, {
+      name: "katy",
+      env: "staging",
+      accounts: [{ origin: `http://127.0.0.1:${port}`, probe: "/health" }],
     });
-    clients.push(first);
-    await first.callTool("new_page", { url: "data:text/html,A" });
+    harness.daemon.personas.refresh("katy");
 
-    const second = await McpClient.startWrapper({
-      daemonPort: harness.daemon.port,
-      personasDir: harness.personasDir,
-      persona: "katy",
-      owner: "agent-2",
-    });
-    clients.push(second);
-
-    const firstPage = await second.callTool("new_page", { url: "data:text/html,B" });
-    expect(firstPage).toContain("Shared login");
-    expect(firstPage).toContain("agent-1");
-    expect(firstPage).toContain("same signed-in user");
-
-    // Once, not on every page: a notice repeated every call is a notice that gets ignored.
-    const secondPage = await second.callTool("new_page", { url: "data:text/html,C" });
-    expect(secondPage).not.toContain("Shared login");
-  }, 180_000);
-
-  it("says nothing about sharing when the agent is alone on a persona", async () => {
-    harness = await startPersonaHarness([
-      { name: "solo-user", env: "staging", accounts: [{ origin: DOORVEST }] },
-    ]);
-    const only = await McpClient.startWrapper({
-      daemonPort: harness.daemon.port,
-      personasDir: harness.personasDir,
-      persona: "solo-user",
-      owner: "agent-1",
-    });
-    clients.push(only);
-
-    const page = await only.callTool("new_page", { url: "data:text/html,A" });
-    expect(page).not.toContain("Shared login");
-  }, 120_000);
+    const result = await (await registry()).callTool("verify_persona", { name: "katy" });
+    // /health answers 200 to anyone, so through the daemon it reads as signed in.
+    expect(result).toContain("IS signed in");
+    expect(result).toContain("200");
+  }, 90_000);
 
   it("writes a note that the next agent reads, and expires the ones about data", async () => {
-    harness = await startPersonaHarness([
-      { name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] },
-    ]);
-    const wrapper = await McpClient.startWrapper({
-      daemonPort: harness.daemon.port,
-      personasDir: harness.personasDir,
-      persona: "katy",
-      owner: "agent-1",
-    });
-    clients.push(wrapper);
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    const r = await registry();
+    await r.callTool("note_persona", { name: "katy", note: "Renewal on unit 52 is mid-approval — leave it." });
+    await r.callTool("note_persona", { name: "katy", note: "Consumed the seeded bid.", ttl_hours: 1 });
 
-    await wrapper.callTool("note_persona", { name: "katy", note: "Renewal on unit 52 is mid-approval — leave it." });
-    await wrapper.callTool("note_persona", { name: "katy", note: "Consumed the seeded bid.", ttl_hours: 1 });
-
-    const listing = await wrapper.callTool("list_personas");
+    const listing = await r.callTool("list_personas");
     expect(listing).toContain("Renewal on unit 52");
     expect(listing).toContain("agent-1");
 
-    // An hour later the data note is gone and the identity note remains.
     const later = new Date(Date.now() + 2 * 3_600_000);
-    const surviving = readNotes(harness.personasDir, "katy", later).map((n) => n.text);
-    expect(surviving).toEqual(["Renewal on unit 52 is mid-approval — leave it."]);
-  }, 120_000);
+    expect(readNotes(harness.personasDir, "katy", later).map((n) => n.text)).toEqual([
+      "Renewal on unit 52 is mid-approval — leave it.",
+    ]);
+  }, 90_000);
 
   it("refuses to remove a persona somebody is using, and names them", async () => {
-    harness = await startPersonaHarness([
-      { name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] },
-    ]);
-    const holder = await McpClient.startWrapper({
-      daemonPort: harness.daemon.port,
-      personasDir: harness.personasDir,
-      persona: "katy",
-      owner: "agent-1",
-    });
-    clients.push(holder);
-    await holder.callTool("new_page", { url: "data:text/html,A" });
-
-    const refusal = await holder.callTool("remove_persona", { name: "katy" });
+    harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
+    await hold("agent-1", "katy");
+    const refusal = await (await registry()).callTool("remove_persona", { name: "katy" });
     expect(refusal).toContain("in use by");
     expect(refusal).toContain("agent-1");
-  }, 120_000);
+  }, 90_000);
 });

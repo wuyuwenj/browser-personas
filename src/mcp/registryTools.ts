@@ -47,6 +47,7 @@ function describePersona(p: PersonaStatus, notes: string[]): string {
     lines.push(`- account: ${account.username ?? "(unnamed)"} at ${account.origin}${account.role ? ` (${account.role})` : ""}`);
   }
   if (p.origins.length > 0) lines.push(`- may reach: ${p.origins.join(", ")}`);
+  lines.push(`- browse as this persona: use the MCP server named chrome-devtools-${p.name}`);
 
   if (p.holders.length === 0) lines.push("- in use by: nobody");
   else {
@@ -87,8 +88,9 @@ export async function listPersonas(deps: RegistryDeps): Promise<ToolText> {
     })
     .join("\n\n");
   return text(
-    `${body}\n\nTo use one, open pages with isolatedContext set to the persona name, or point ` +
-      `this server at ws://…/devtools/browser/bp?persona=<name>.`,
+    `${body}\n\nA browsing session is one persona, chosen by which chrome-devtools entry it runs ` +
+      `through. To browse as one of these, use the MCP server named chrome-devtools-<name>; if it ` +
+      `does not exist yet, \`browser-personas init --persona <name>\` creates it.`,
   );
 }
 

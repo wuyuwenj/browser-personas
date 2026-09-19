@@ -185,6 +185,63 @@ export class BrowserPersonasDaemon {
     this.#loginWatch.unref?.();
   }
 
+  /**
+   * "Is this persona still signed in?" answered by the application, from inside the
+   * persona's own browser context — the only place its cookies exist. Opens a tab on the
+   * probe URL, reads where it landed and what it returned, closes the tab.
+   */
+  async verifyPersona(persona: string): Promise<{ status: number | null; url: string | null; signedIn: boolean }> {
+    const manifest = loadManifest(this.#personasDir, persona);
+    const account = (manifest?.accounts ?? []).find((a) => a.probe);
+    if (!account?.probe) return { status: null, url: null, signedIn: false };
+    const url = new URL(account.probe, account.origin).toString();
+    const ctx = await this.#personas.ensure(persona).catch(() => undefined);
+
+    // The tab opens ON the probe URL, not on about:blank. A fetch from a blank page to the
+    // app is cross-origin and CORS refuses it — which reads as "the probe failed" when the
+    // truth was "we asked from the wrong place". From the app's own origin the fetch is
+    // same-origin and carries the persona's cookies.
+    const created = await this.#callUpstream("Target.createTarget", {
+      url,
+      ...(ctx?.browserContextId ? { browserContextId: ctx.browserContextId } : {}),
+    });
+    const targetId = typeof created["targetId"] === "string" ? (created["targetId"] as string) : null;
+    if (!targetId) return { status: null, url, signedIn: false };
+    // The proxy's own tab, never an agent's: claim it under a synthetic owner so no
+    // client's list_pages ever shows it, then remove it.
+    this.registry.connectOwner("__verify", persona, this.#now());
+    this.registry.claim(targetId, "__verify", this.#now());
+    try {
+      const attached = await this.#callUpstream("Target.attachToTarget", { targetId, flatten: true });
+      const sessionId = typeof attached["sessionId"] === "string" ? (attached["sessionId"] as string) : null;
+      if (!sessionId) return { status: null, url, signedIn: false };
+      // Let the navigation (and any redirect to a login page) land first.
+      await this.#callUpstream(
+        "Runtime.evaluate",
+        { expression: "new Promise(r => (document.readyState === 'complete' ? r() : addEventListener('load', r, { once: true })))", awaitPromise: true },
+        sessionId,
+      ).catch(() => undefined);
+      const result = await this.#callUpstream(
+        "Runtime.evaluate",
+        {
+          expression: `(location.pathname.startsWith("/login") ? Promise.resolve(401) :
+            fetch(location.href, { credentials: "include", redirect: "follow" })
+              .then(r => (new URL(r.url).pathname.startsWith("/login") ? 401 : r.status)).catch(() => -1))`,
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        sessionId,
+      );
+      const value = (result["result"] as { value?: unknown } | undefined)?.value;
+      const status = typeof value === "number" && value > 0 ? value : null;
+      return { status, url, signedIn: status !== null && status >= 200 && status < 300 };
+    } finally {
+      await this.#callUpstream("Target.closeTarget", { targetId }).catch(() => undefined);
+      this.registry.removeTarget(targetId);
+      this.registry.forgetOwner("__verify");
+    }
+  }
+
   /** Let the human keep the window open and save by hand. */
   holdLogin(persona: string): boolean {
     const session = this.#logins.get(persona);
@@ -886,6 +943,7 @@ export class BrowserPersonasDaemon {
       cancelLogin: (persona: string) => this.cancelLogin(persona),
       autofillLogin: (persona: string) => this.autofillLogin(persona),
       holdLogin: (persona: string) => this.holdLogin(persona),
+      verifyPersona: (persona: string) => this.verifyPersona(persona),
       reloadPersona: (persona: string) => {
         this.#personas.refresh(persona);
         void this.#personas.ensure(persona).catch(() => undefined);
@@ -899,6 +957,7 @@ export class BrowserPersonasDaemon {
       ...this.#personas.names(),
       ...this.registry.owners().map((o) => o.persona),
     ]);
+    const visibleOwners = this.registry.owners().filter((o) => o.id !== "__verify");
     return {
       port: this.port,
       chromeAlive: this.#chrome?.process.exitCode === null,
@@ -919,14 +978,14 @@ export class BrowserPersonasDaemon {
             probe: a.probe,
           })),
           leaseHolder: this.#personas.leaseHolder(name),
-          holders: this.registry.holdersOf(name).map((o) => ({
+          holders: this.registry.holdersOf(name).filter((o) => o.id !== "__verify").map((o) => ({
             owner: o.id,
             tabs: this.registry.pageCount(o.id),
             since: new Date(o.connectedAt).toISOString(),
           })),
         };
       }),
-      owners: this.registry.owners().map((o) => ({
+      owners: visibleOwners.map((o) => ({
         id: o.id,
         persona: o.persona,
         connected: o.connected,

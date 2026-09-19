@@ -6,7 +6,6 @@ import {
   ListPromptsRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { UpstreamMcp } from "./upstream.js";
 import {
   addPersona,
   listPersonas,
@@ -16,7 +15,6 @@ import {
   text,
   verifyPersona,
   type RegistryDeps,
-  type ToolText,
 } from "./registryTools.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,8 +25,9 @@ const REGISTRY_TOOLS = [
     name: "list_personas",
     description:
       "List the browser identities available to you: who each one is, what it may reach, " +
-      "whether another agent is already using it, and any notes agents have left. Call this " +
-      "before opening a page when the task needs a particular signed-in user.",
+      "whether another agent is already using it (a shared login means your actions are " +
+      "attributed to the same user), and any notes agents have left. Call this before " +
+      "browsing when the task needs a particular signed-in user.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -62,7 +61,7 @@ const REGISTRY_TOOLS = [
     name: "add_persona",
     description:
       "Register a new persona. This creates its definition only — it has no login until " +
-      "someone runs `browser-personas login NAME --url URL` in a terminal.",
+      "someone signs it in from the console or with `browser-personas login NAME --url URL`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -89,14 +88,11 @@ const REGISTRY_TOOLS = [
   },
 ] as const;
 
-export type WrapperOptions = {
+export type RegistryOptions = {
   personasDir: string;
   configDir: string;
-  persona: string;
   owner: string;
   daemonUrl: string;
-  upstreamCommand: string;
-  upstreamArgs: string[];
 };
 
 /**
@@ -112,81 +108,81 @@ function consoleToken(configDir: string): string | null {
   }
 }
 
-async function fetchStatus(daemonUrl: string, configDir: string): Promise<DaemonStatus | null> {
-  const token = consoleToken(configDir);
+async function daemonFetch(
+  options: RegistryOptions,
+  path: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<Response | null> {
+  const token = consoleToken(options.configDir);
   try {
-    const res = await fetch(`${daemonUrl}/status`, {
-      signal: AbortSignal.timeout(4_000),
-      headers: token ? { "x-console-token": token } : {},
+    return await fetch(`${options.daemonUrl}${path}`, {
+      method: init.method ?? "GET",
+      signal: AbortSignal.timeout(20_000),
+      headers: {
+        ...(token ? { "x-console-token": token } : {}),
+        ...(init.body !== undefined ? { "content-type": "application/json", origin: options.daemonUrl } : {}),
+      },
+      body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
     });
-    if (!res.ok) return null;
-    return (await res.json()) as DaemonStatus;
   } catch {
     return null;
   }
 }
 
 /**
- * The wrapper server: chrome-devtools-mcp's whole toolset, plus the persona registry, plus
- * one sentence appended the first time this agent opens a page on a persona somebody else
- * is also holding. That sentence is the only way an agent learns it is sharing a login,
- * because nothing in the CDP protocol carries a note to the model.
+ * The registry: five tools and one prompt, nothing else.
+ *
+ * It used to re-export chrome-devtools-mcp's whole toolset as well, so one entry could
+ * carry everything. That doubled the schema every agent loads on every session and tied
+ * this project to each upstream tool change, for one feature — a notice that is now
+ * carried by `list_personas` instead. Browsing stays with chrome-devtools-mcp, unchanged,
+ * through the shim. This server is optional and small.
  */
-export async function startWrapper(options: WrapperOptions): Promise<void> {
-  const upstream = await UpstreamMcp.start(options.upstreamCommand, options.upstreamArgs);
-
+export async function startRegistry(options: RegistryOptions): Promise<void> {
   const deps: RegistryDeps = {
     personasDir: options.personasDir,
     owner: options.owner,
-    status: () => fetchStatus(options.daemonUrl, options.configDir),
-    probe: async (url) => {
-      const result = (await upstream
-        .request("tools/call", { name: "new_page", arguments: { url } })
-        .catch(() => null)) as { content?: { text?: string }[] } | null;
-      if (!result) return null;
-      const body = (result.content ?? []).map((c) => c.text ?? "").join(" ");
-      return /\b(4\d\d|5\d\d)\b/.test(body) ? 401 : 200;
+    status: async () => {
+      const res = await daemonFetch(options, "/status");
+      if (!res?.ok) return null;
+      return (await res.json()) as DaemonStatus;
+    },
+    // The daemon probes from inside the persona's own browser context, which is the only
+    // place the persona's cookies exist. This server has no browser of its own.
+    probe: async (_url, persona) => {
+      const res = await daemonFetch(options, `/api/personas/${encodeURIComponent(persona)}/verify`, {
+        method: "POST",
+        body: {},
+      });
+      if (!res?.ok) return null;
+      const json = (await res.json()) as { status?: number | null };
+      return typeof json.status === "number" ? json.status : null;
     },
   };
 
   const server = new Server(
-    { name: "browser-personas", version: "0.3.0" },
+    { name: "browser-personas", version: "0.9.0" },
     { capabilities: { tools: {}, prompts: {} } },
   );
 
-  let coTenancyAnnounced = false;
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const upstreamTools = (await upstream.request("tools/list", {})) as { tools?: unknown[] };
-    return { tools: [...(upstreamTools.tools ?? []), ...REGISTRY_TOOLS] };
-  });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...REGISTRY_TOOLS] }));
 
   server.setRequestHandler(ListPromptsRequestSchema, async () => ({
     prompts: [
-      {
-        name: "personas",
-        description: "Show the browser identities available to you and who is using them.",
-      },
+      { name: "personas", description: "Show the browser identities available to you and who is using them." },
     ],
   }));
 
   server.setRequestHandler(GetPromptRequestSchema, async () => {
     const listing = await listPersonas(deps);
     return {
-      messages: [
-        {
-          role: "user" as const,
-          content: { type: "text" as const, text: listing.content[0]?.text ?? "" },
-        },
-      ],
+      messages: [{ role: "user" as const, content: { type: "text" as const, text: listing.content[0]?.text ?? "" } }],
     };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-
-    switch (name) {
+    switch (request.params.name) {
       case "list_personas":
         return listPersonas(deps);
       case "verify_persona":
@@ -203,41 +199,11 @@ export async function startWrapper(options: WrapperOptions): Promise<void> {
       case "remove_persona":
         return removePersona(deps, String(args["name"] ?? ""));
       default:
-        break;
+        return text(`Unknown tool: ${request.params.name}`, true);
     }
-
-    const result = (await upstream.request("tools/call", request.params)) as ToolText;
-
-    if (name === "new_page" && !coTenancyAnnounced) {
-      coTenancyAnnounced = true;
-      const notice = await coTenancyNotice(deps, options.persona, options.owner);
-      if (notice) {
-        return { ...result, content: [...(result.content ?? []), { type: "text" as const, text: notice }] };
-      }
-    }
-    return result;
   });
 
   await server.connect(new StdioServerTransport());
-}
-
-/** One sentence, once, and only when somebody else really is on this persona. */
-async function coTenancyNotice(
-  deps: RegistryDeps,
-  persona: string,
-  owner: string,
-): Promise<string | null> {
-  const status = await deps.status();
-  const record = status?.personas.find((p) => p.name === persona);
-  if (!record) return null;
-  const others = record.holders.filter((h) => h.owner !== owner);
-  if (others.length === 0) return null;
-  return (
-    `Shared login: ${others.length} other agent${others.length === 1 ? "" : "s"} ` +
-    `(${others.map((o) => o.owner).join(", ")}) hold "${persona}". ` +
-    `Your tabs are yours, but every action is attributed to the same signed-in user, and a ` +
-    `sign-out by any of you signs out all of you.`
-  );
 }
 
 export { text };

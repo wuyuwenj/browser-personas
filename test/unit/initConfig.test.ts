@@ -1,0 +1,121 @@
+import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { backupPath, isThroughShim, revertHostFile, rewriteHostFile } from "../../src/cli/mcpConfig.js";
+
+const launcher = { command: "/usr/bin/node", prefix: ["/opt/bp/dist/cli.js"] };
+const tmp = (): string => mkdtempSync(join(tmpdir(), "bp-init-"));
+const read = (f: string): Record<string, unknown> => JSON.parse(readFileSync(f, "utf8")) as Record<string, unknown>;
+const servers = (f: string): Record<string, { command: string; args: string[]; env?: unknown }> =>
+  read(f)["mcpServers"] as never;
+
+/**
+ * `init` on a host config file. The promise is transparency: the user's entry keeps every
+ * flag and every environment variable it had, and gains only the shim in front of it.
+ */
+describe("routing an existing chrome-devtools entry through the shim", () => {
+  it("wraps the user's own command, keeps their flags and env, and backs the file up first", () => {
+    const f = join(tmp(), ".claude.json");
+    writeFileSync(f, JSON.stringify({
+      mcpServers: {
+        "chrome-devtools": {
+          command: "npx",
+          args: ["-y", "chrome-devtools-mcp@latest", "--headless", "--browserUrl=http://127.0.0.1:9222"],
+          env: { DEBUG: "1" },
+        },
+        "some-other-server": { command: "foo", args: [] },
+      },
+    }));
+
+    const report = rewriteHostFile(f, { launcher, persona: "default", create: true });
+
+    expect(report.changed).toEqual(["chrome-devtools"]);
+    const entry = servers(f)["chrome-devtools"]!;
+    expect(entry.command).toBe("/usr/bin/node");
+    expect(entry.args).toEqual([
+      "/opt/bp/dist/cli.js", "exec", "--persona", "default",
+      "--", "npx", "-y", "chrome-devtools-mcp@latest", "--headless", "--browserUrl=http://127.0.0.1:9222",
+    ]);
+    expect(entry.env).toEqual({ DEBUG: "1" });
+    // Untouched neighbours stay untouched; the backup is the original byte for byte.
+    expect(servers(f)["some-other-server"]).toEqual({ command: "foo", args: [] });
+    expect(existsSync(backupPath(f))).toBe(true);
+    expect(JSON.parse(readFileSync(backupPath(f), "utf8")).mcpServers["chrome-devtools"].command).toBe("npx");
+  });
+
+  it("is idempotent: a second init changes nothing and does not double-wrap", () => {
+    const f = join(tmp(), ".claude.json");
+    writeFileSync(f, JSON.stringify({ mcpServers: { "chrome-devtools": { command: "npx", args: ["-y", "chrome-devtools-mcp@latest"] } } }));
+    rewriteHostFile(f, { launcher, persona: "default" });
+    const once = readFileSync(f, "utf8");
+
+    const again = rewriteHostFile(f, { launcher, persona: "default" });
+
+    expect(again.changed).toEqual([]);
+    expect(again.skipped).toEqual(["chrome-devtools"]);
+    expect(readFileSync(f, "utf8")).toBe(once);
+    expect(servers(f)["chrome-devtools"]!.args.filter((a) => a === "exec")).toHaveLength(1);
+  });
+
+  it("reverts to the exact original", () => {
+    const f = join(tmp(), ".claude.json");
+    const original = JSON.stringify({ mcpServers: { "chrome-devtools": { command: "npx", args: ["-y", "chrome-devtools-mcp@latest"] } } });
+    writeFileSync(f, original);
+    rewriteHostFile(f, { launcher, persona: "default" });
+
+    expect(revertHostFile(f)).toBe(true);
+    expect(readFileSync(f, "utf8")).toBe(original);
+  });
+
+  it("also routes project-scoped entries, with the persona they had rather than a new one", () => {
+    const f = join(tmp(), ".claude.json");
+    writeFileSync(f, JSON.stringify({
+      mcpServers: {},
+      projects: { "/Users/x/repo": { mcpServers: { "chrome-devtools": { command: "npx", args: ["-y", "chrome-devtools-mcp@latest"] } } } },
+    }));
+
+    const report = rewriteHostFile(f, { launcher, persona: "default", personas: ["katy"], create: true });
+
+    expect(report.changed).toEqual(["/Users/x/repo: chrome-devtools"]);
+    const proj = (read(f)["projects"] as never)["/Users/x/repo"]["mcpServers"];
+    expect(isThroughShim(proj["chrome-devtools"])).toBe(true);
+    // Sibling personas belong at the top level only.
+    expect(proj["chrome-devtools-katy"]).toBeUndefined();
+    expect(servers(f)["chrome-devtools-katy"]).toBeDefined();
+  });
+});
+
+describe("a fresh install", () => {
+  it("creates one entry that runs the bundled upstream", () => {
+    const f = join(tmp(), ".claude.json");
+    const report = rewriteHostFile(f, { launcher, persona: "default", create: true });
+
+    expect(report.created).toEqual(["chrome-devtools"]);
+    expect(servers(f)["chrome-devtools"]!.args).toEqual(["/opt/bp/dist/cli.js", "exec", "--persona", "default"]);
+  });
+
+  it("does not invent a file when asked only to rewrite", () => {
+    const f = join(tmp(), ".claude.json");
+    const report = rewriteHostFile(f, { launcher, persona: "default" });
+    expect(report.created).toEqual([]);
+    expect(existsSync(f)).toBe(false);
+  });
+});
+
+describe("personas and the registry", () => {
+  it("adds a chrome-devtools-<name> entry per persona, seeded from the user's base command", () => {
+    const f = join(tmp(), ".claude.json");
+    writeFileSync(f, JSON.stringify({ mcpServers: { "chrome-devtools": { command: "npx", args: ["-y", "chrome-devtools-mcp@1.9.0", "--headless"] } } }));
+
+    const report = rewriteHostFile(f, { launcher, persona: "default", personas: ["katy", "kendrick"], registry: true });
+
+    expect(report.created).toEqual(["chrome-devtools-katy", "chrome-devtools-kendrick", "browser-personas"]);
+    const katy = servers(f)["chrome-devtools-katy"]!;
+    expect(katy.args).toEqual([
+      "/opt/bp/dist/cli.js", "exec", "--persona", "katy",
+      "--", "npx", "-y", "chrome-devtools-mcp@1.9.0", "--headless",
+    ]);
+    expect(servers(f)["browser-personas"]!.args).toEqual(["/opt/bp/dist/cli.js", "mcp"]);
+  });
+});

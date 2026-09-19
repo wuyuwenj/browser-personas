@@ -42,6 +42,7 @@ export type ApiDeps = {
   autofillLogin: (persona: string) => Promise<boolean>;
   /** Stop the watcher saving this login by itself. */
   holdLogin: (persona: string) => boolean;
+  verifyPersona: (persona: string) => Promise<{ status: number | null; url: string | null; signedIn: boolean }>;
   reloadPersona: (persona: string) => void;
 };
 
@@ -180,6 +181,7 @@ export async function handleApi(
     }
     if (method === "POST" && rest === "/login/autofill") return ok({ filled: await deps.autofillLogin(name) });
     if (method === "POST" && rest === "/login/hold") return ok({ held: deps.holdLogin(name) });
+    if (method === "POST" && rest === "/verify") return ok(await deps.verifyPersona(name));
     if (method === "POST" && rest === "/login/finish") return ok(await deps.finishLogin(name));
     if (method === "DELETE" && rest === "/login") {
       await deps.cancelLogin(name);

@@ -18,32 +18,27 @@ gets to solve the captcha again, once per agent.
 one Chrome. Every agent gets its own tabs and cannot see, attach to, navigate or close
 anyone else's. One browser, one profile, one login.
 
-## Try it in two terminals
-
-```bash
-# terminal 0
-npx browser-personas start
-
-# terminal 1
-npx chrome-devtools-mcp@latest --browserUrl=http://127.0.0.1:9223
-
-# terminal 2
-npx chrome-devtools-mcp@latest --browserUrl=http://127.0.0.1:9223
-```
-
-Open a page in each. Each `list_pages` shows one page — its own. Activity Monitor shows
-one Chrome.
-
 ## Install
 
 ```bash
-npx browser-personas init     # points existing chrome-devtools MCP entries at the proxy
+npx browser-personas init
 npx browser-personas start
 ```
 
-`init` keeps every flag your entry already had and writes a backup first; `init --revert`
-puts the originals back. Restart your agent sessions afterwards — an MCP server reads its
-flags once, at startup.
+That is the whole change. If you already use chrome-devtools-mcp, `init` finds your entry
+and routes it through a tiny shim: every flag you had stays, and the agent sees exactly
+the tools it always had. If you do not, `init` creates the entry, running the copy of
+chrome-devtools-mcp that ships with this package. Restart your agent sessions — an MCP
+server reads its flags once, at startup — and every session now shares one Chrome with
+its own tabs.
+
+`init --revert` puts your config back byte for byte. `init` is safe to run again; it
+never wraps an entry twice.
+
+## Try it in two terminals
+
+Open two terminals, start `claude` in each, and ask each one to open a page. Then ask
+each what pages it has: one page each, its own. Activity Monitor shows one Chrome.
 
 ## How it works
 
@@ -65,28 +60,34 @@ to nobody and are invisible to every agent.
 arrives, so for a few milliseconds nobody owns it. Those frames are held, then released to
 whoever the response says created it. Nothing unclaimed is ever shown to anyone.
 
-## Works with
+## Works with anything that speaks CDP
+
+`init` handles chrome-devtools-mcp. Everything else points at the proxy directly:
 
 | Client | How to point it here |
 |---|---|
-| chrome-devtools-mcp | `--browserUrl=http://127.0.0.1:9223` |
 | Playwright / Playwright MCP | `--cdp-endpoint http://127.0.0.1:9223` |
 | Puppeteer | `puppeteer.connect({ browserURL: "http://127.0.0.1:9223" })` |
-| anything speaking CDP | the same host and port |
+| agent-browser | `agent-browser connect 9223` |
 
-### Naming an agent
+`--browserUrl` gives isolation with an anonymous, per-connection identity. To carry a
+persona and a stable owner name, use the websocket form the shim uses:
+`ws://127.0.0.1:9223/devtools/browser/bp?owner=<id>&persona=<name>`. Puppeteer resolves
+`/json/version` as an absolute path against `browserURL` and discards anything else on
+it, which is the whole reason the shim exists.
 
-`--browserUrl` gives you isolation with an anonymous, per-connection identity. To give a
-session a stable name — so a reconnect gets its tabs back instead of new ones — use the
-websocket form, which is the only one that can carry a name:
+### Why a shim
 
-```bash
-npx chrome-devtools-mcp@latest \
-  --wsEndpoint "ws://127.0.0.1:9223/devtools/browser/bp?owner=$(tty | tr -cs 'a-z0-9' -)"
-```
+Two facts. `--browserUrl` cannot carry a persona or an owner name, and a static config
+entry cannot hold a per-session id — every session using it would share one, and
+reclaim-after-reconnect would hand one session another's tabs. So `browser-personas exec`
+computes the id at spawn time from the controlling terminal, and runs the very command
+you had with the proxy endpoint appended. It resolves the upstream in a fixed order —
+your own command, then the copy bundled here, then `npx chrome-devtools-mcp@latest` —
+and says which one it picked on stderr, so version drift is visible.
 
-Puppeteer resolves `/json/version` as an absolute path against `browserURL`, which
-discards any path or query you put there. A websocket endpoint is passed through verbatim.
+Chrome itself is the one thing this never fetches quietly. If none is installed, `init`
+prints the one-liner and stops.
 
 ## Personas: one browser, several logins
 
@@ -157,17 +158,22 @@ network log explains itself instead of looking like a flaky site.
 from one that writes, so it marks the request and the application decides. A proxy
 claiming to block writes it cannot identify would be a false guarantee.
 
-## Let the agent choose its own identity
+## Browsing as a persona
 
-Run browser-personas as the MCP server and your agent gets chrome-devtools-mcp's whole
-toolset plus five persona tools. It can then read who is available and pick:
+A browsing session is one persona, chosen by which entry it runs through:
 
-```jsonc
-{ "mcpServers": { "browser": {
-    "command": "npx",
-    "args": ["browser-personas", "mcp", "--persona", "katy"]
-} } }
+```bash
+npx browser-personas init --persona katy --persona kendrick
 ```
+
+adds `chrome-devtools-katy` and `chrome-devtools-kendrick` beside your `chrome-devtools`
+entry, each a copy of your own command through the shim. An agent picks by server name,
+which is how MCP hosts already model "which one". Tabs it opens carry that login.
+
+## Let the agent discover identities
+
+Optional. `init --registry` adds a second, five-tool server so an agent can read who is
+available and who is using what:
 
 | Tool | What the agent uses it for |
 |---|---|
@@ -177,7 +183,9 @@ toolset plus five persona tools. It can then read who is available and pick:
 | `add_persona` | register a new identity (it still needs a `login` run to get a session) |
 | `remove_persona` | delete one and shred its jar; refused while an agent holds it |
 
-There is also a `/personas` prompt that just prints the list.
+There is also a `/personas` prompt that just prints the list. Browsing itself stays with
+chrome-devtools-mcp, untouched: the registry never re-exports its tools, so nobody pays
+for a doubled tool schema on every session.
 
 ### Sharing a login
 
@@ -298,12 +306,15 @@ token, and they expose no credentials.
 ## Commands
 
 ```
-browser-personas init [--port N]      point agent configs at the proxy
-browser-personas init --revert        restore them
+browser-personas init                 route chrome-devtools-mcp entries through the proxy
+browser-personas init --persona NAME  add a chrome-devtools-NAME entry (repeatable)
+browser-personas init --registry      add the five-tool registry server
+browser-personas init --revert        restore your configs
+browser-personas exec -- CMD...       what init installs; runs CMD through the proxy
 browser-personas login NAME --url U   log a persona in once; saves itself when you are done
 browser-personas personas             list personas, their scope and restrictions
 browser-personas console [--open]     print (or open) the local console link
-browser-personas mcp [--persona NAME] run as an MCP server (tools + registry)
+browser-personas mcp                  the persona registry, as an MCP server
 browser-personas start [--headed]     run the daemon
 browser-personas status               who holds which tabs
 browser-personas stop
@@ -327,8 +338,9 @@ you, the same as it can read Chrome's. The isolation here is between well-behave
 
 ## Status
 
-v0.8: the proxy, tab ownership, personas that hold several websites and survive any login
-method, the registry MCP, and the console. Still ahead are per-owner audit logs and rate limits, IndexedDB for the
+v0.9: transparent mode — your chrome-devtools-mcp, your flags, one Chrome underneath;
+personas that hold several websites and survive any login method; the optional registry;
+the console. Still ahead are per-owner audit logs and rate limits, IndexedDB for the
 few SDKs that use it, and Linux vault coverage. The design and a per-milestone record of what the
 real browser taught us are in [`docs/design.html`](docs/design.html).
 

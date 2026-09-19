@@ -3,12 +3,23 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromeProfileDir, configDir, DEFAULT_HOST, DEFAULT_PORT, personasDir, runtimeDir } from "./config.js";
 import { DaemonLock } from "./cli/lock.js";
-import { knownHosts, proxyUrl, revertHostFile, rewriteHostFile } from "./cli/mcpConfig.js";
+import { knownHosts, proxyUrl, revertHostFile, rewriteHostFile, selfLauncher } from "./cli/mcpConfig.js";
+import { deriveOwner, planShim, resolveUpstream, runShim } from "./cli/shim.js";
+import { findChrome } from "./chrome/launch.js";
+import { existsSync } from "node:fs";
 import { BrowserPersonasDaemon } from "./proxy/server.js";
 import { loginPersona } from "./cli/login.js";
 import { allowedOrigins, loadManifest } from "./personas/manifest.js";
 
-type Flags = Record<string, string | boolean>;
+type Flags = Record<string, string | boolean | string[]>;
+
+/** `--persona a --persona b` collects; a single `--persona a` is a string. */
+function personaFlags(flags: Flags): string[] {
+  const v = flags["persona"];
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") return [v];
+  return [];
+}
 
 function parseFlags(argv: string[]): { command: string; flags: Flags } {
   const [command = "help", ...rest] = argv;
@@ -16,31 +27,41 @@ function parseFlags(argv: string[]): { command: string; flags: Flags } {
   for (let i = 0; i < rest.length; i++) {
     const token = rest[i]!;
     if (!token.startsWith("--")) continue;
+    if (token === "--") break; // everything after belongs to the wrapped command
     const eq = token.indexOf("=");
+    let key: string;
+    let value: string | boolean;
     if (eq !== -1) {
-      flags[token.slice(2, eq)] = token.slice(eq + 1);
+      key = token.slice(2, eq);
+      value = token.slice(eq + 1);
     } else {
+      key = token.slice(2);
       const next = rest[i + 1];
       if (next && !next.startsWith("--")) {
-        flags[token.slice(2)] = next;
+        value = next;
         i++;
-      } else {
-        flags[token.slice(2)] = true;
-      }
+      } else value = true;
     }
+    const prev = flags[key];
+    if (typeof value === "string" && prev !== undefined) {
+      flags[key] = Array.isArray(prev) ? [...prev, value] : typeof prev === "string" ? [prev, value] : value;
+    } else flags[key] = value;
   }
   return { command, flags };
 }
 
 const HELP = `browser-personas — one Chrome, many agents
 
-  init [--config-dir DIR] [--port N]   point chrome-devtools-mcp entries at the proxy
+  init [--persona NAME]... [--registry]  route your chrome-devtools-mcp entries through the
+                                       proxy; add a chrome-devtools-<name> entry per persona
   init --revert                        restore the agent configs init changed
+  exec [--persona NAME] -- CMD...      (what init installs) run chrome-devtools-mcp through
+                                       the proxy with a per-session owner id
   login NAME --url URL [--env staging] log a persona in once; the cookies persist
   personas                             list personas, their scope and login state
   console                              print the local console link (token included)
-  mcp [--persona NAME] [--owner ID]    run as an MCP server: chrome-devtools-mcp's tools,
-                                       plus the persona registry, on this proxy
+  mcp                                  the persona registry as an MCP server (5 tools);
+                                       optional — init --registry adds it
   start [--port N] [--headed]          run the daemon in the foreground
   status [--port N]                    who holds which tabs
   stop [--config-dir DIR]              stop a running daemon
@@ -56,7 +77,6 @@ async function main(): Promise<number> {
 
   switch (command) {
     case "init": {
-      const url = proxyUrl(port);
       if (flags["revert"]) {
         for (const hostCfg of knownHosts()) {
           if (revertHostFile(hostCfg.path)) console.log(`restored ${hostCfg.path}`);
@@ -66,21 +86,61 @@ async function main(): Promise<number> {
       mkdirSync(configDir(dir), { recursive: true });
       mkdirSync(chromeProfileDir(dir), { recursive: true });
       mkdirSync(runtimeDir(dir), { recursive: true });
-      let touched = 0;
-      for (const hostCfg of knownHosts()) {
-        const changed = rewriteHostFile(hostCfg.path, url);
-        for (const name of changed) {
-          console.log(`${hostCfg.name}: ${name} now uses ${url}`);
-          touched++;
-        }
+
+      // A browser is the one thing this cannot fetch quietly: a few hundred megabytes
+      // should never land on someone's disk without being asked.
+      try {
+        const chrome = findChrome(typeof flags["chrome-path"] === "string" ? flags["chrome-path"] : undefined);
+        console.log(`chrome:      ${chrome}`);
+      } catch {
+        console.log("chrome:      not found. Install Chrome, Chromium or Edge, or fetch one with:");
+        console.log("             npx @puppeteer/browsers install chrome@stable");
+        console.log("             then re-run init (or pass --chrome-path to start).");
       }
-      if (touched === 0) {
-        console.log(`No chrome-devtools MCP entry found. Add one pointing at ${url}, for example:`);
-        console.log(`  npx chrome-devtools-mcp@latest --browserUrl=${url}`);
+
+      const personas = personaFlags(flags);
+      const options = {
+        launcher: selfLauncher(),
+        persona: "default",
+        personas,
+        registry: Boolean(flags["registry"]),
+        create: true,
+      };
+      const hostFiles = flags["host-file"] ? [{ name: "custom" as const, path: String(flags["host-file"]) }] : knownHosts();
+      let anything = false;
+      for (const hostCfg of hostFiles) {
+        if (!existsSync(hostCfg.path) && hostCfg.name !== "claude-code" && hostCfg.name !== "custom") continue;
+        const report = rewriteHostFile(hostCfg.path, options);
+        for (const n of report.changed) console.log(`${hostCfg.name}: ${n} now runs through the proxy (your flags kept)`);
+        for (const n of report.created) console.log(`${hostCfg.name}: added ${n}`);
+        for (const n of report.skipped) console.log(`${hostCfg.name}: ${n} already routed`);
+        anything ||= report.changed.length + report.created.length > 0;
       }
-      console.log(`config dir: ${configDir(dir)}`);
-      console.log("Restart every running agent session — an MCP server reads its flags once, at startup.");
+      const upstream = resolveUpstream([]);
+      console.log(`upstream:    chrome-devtools-mcp (${upstream.source === "bundled" ? "bundled with browser-personas" : "npx @latest"}) — your own entry's command wins if it had one`);
+      console.log(`proxy:       ${proxyUrl(port)}`);
+      console.log(`config dir:  ${configDir(dir)}`);
+      if (anything) console.log("Restart every running agent session — an MCP server reads its flags once, at startup.");
+      console.log(`Next:        browser-personas start, then browser-personas console --open to add a persona.`);
       return 0;
+    }
+
+    case "exec": {
+      // The shim. stdout is the MCP stream, so every diagnostic goes to stderr.
+      const dash = process.argv.indexOf("--");
+      const userCommand = dash === -1 ? [] : process.argv.slice(dash + 1);
+      const plan = planShim({
+        persona: typeof flags["persona"] === "string" ? flags["persona"] : "default",
+        host,
+        port,
+        userCommand,
+        owner: typeof flags["owner"] === "string" ? flags["owner"] : undefined,
+      });
+      process.stderr.write(
+        `browser-personas: persona=${plan.persona} owner=${plan.owner} upstream=${plan.upstream} → ${plan.wsEndpoint}\n`,
+      );
+      const code = await runShim(plan);
+      process.exit(code);
     }
 
     case "start": {
@@ -173,40 +233,12 @@ async function main(): Promise<number> {
     }
 
     case "mcp": {
-      const { startWrapper } = await import("./mcp/server.js");
-      const { createRequire } = await import("node:module");
-      const require = createRequire(import.meta.url);
-
-      const persona = typeof flags["persona"] === "string" ? flags["persona"] : "default";
-      // A stable owner id lets a reconnect reclaim this session's tabs. The controlling
-      // terminal is the most stable thing available that is also different per session.
-      const owner =
-        typeof flags["owner"] === "string"
-          ? flags["owner"]
-          : `mcp-${(process.env["TTY"] ?? String(process.ppid)).replace(/[^A-Za-z0-9]+/g, "-")}`;
-      const query = new URLSearchParams({ owner, persona });
-      const wsEndpoint = `ws://${host}:${port}/devtools/browser/bp?${query}`;
-
-      let upstreamBin: string;
-      try {
-        upstreamBin = require.resolve("chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js");
-      } catch {
-        console.error(
-          "chrome-devtools-mcp is not installed next to browser-personas.\n" +
-            "Install it (npm i -g chrome-devtools-mcp) or point your agent straight at\n" +
-            `  npx chrome-devtools-mcp@latest --wsEndpoint ${wsEndpoint}`,
-        );
-        return 1;
-      }
-
-      await startWrapper({
+      const { startRegistry } = await import("./mcp/server.js");
+      await startRegistry({
         personasDir: personasDir(dir),
         configDir: configDir(dir),
-        persona,
-        owner,
+        owner: typeof flags["owner"] === "string" ? flags["owner"] : deriveOwner(),
         daemonUrl: `http://${host}:${port}`,
-        upstreamCommand: process.execPath,
-        upstreamArgs: [upstreamBin, "--wsEndpoint", wsEndpoint],
       });
       return -1;
     }
