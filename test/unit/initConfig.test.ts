@@ -86,6 +86,40 @@ describe("routing an existing chrome-devtools entry through the shim", () => {
   });
 });
 
+describe("a custom launcher script", () => {
+  const withLauncher = () => {
+    const f = join(tmp(), ".claude.json");
+    writeFileSync(f, JSON.stringify({ mcpServers: { "chrome-devtools": { command: "/Users/me/.claude/bin/cdp-profile-lease", args: ["--experimentalPageIdRouting"] } } }));
+    return f;
+  };
+
+  it("is left alone and flagged, because it may pick its own browser at runtime", () => {
+    const f = withLauncher();
+    const report = rewriteHostFile(f, { launcher, persona: "default" });
+
+    expect(report.changed).toEqual([]);
+    expect(report.warned).toEqual(["chrome-devtools (/Users/me/.claude/bin/cdp-profile-lease)"]);
+    expect(servers(f)["chrome-devtools"]!.command).toBe("/Users/me/.claude/bin/cdp-profile-lease");
+    expect(existsSync(backupPath(f))).toBe(false);
+  });
+
+  it("is swapped for the bundled upstream on request", () => {
+    const f = withLauncher();
+    const report = rewriteHostFile(f, { launcher, persona: "default", replaceLaunchers: true });
+
+    expect(report.replaced).toEqual(["chrome-devtools"]);
+    expect(servers(f)["chrome-devtools"]!.args).toEqual(["/opt/bp/dist/cli.js", "exec", "--persona", "default"]);
+  });
+
+  it("still recognises the ordinary ways of running upstream", async () => {
+    const { isKnownUpstream } = await import("../../src/cli/mcpConfig.js");
+    expect(isKnownUpstream({ command: "npx", args: ["-y", "chrome-devtools-mcp@latest"] })).toBe(true);
+    expect(isKnownUpstream({ command: "/usr/local/bin/node", args: ["/x/chrome-devtools-mcp.js"] })).toBe(true);
+    expect(isKnownUpstream({ command: "chrome-devtools-mcp", args: [] })).toBe(true);
+    expect(isKnownUpstream({ command: "/home/me/my-launcher.sh", args: ["--flag"] })).toBe(false);
+  });
+});
+
 describe("a fresh install", () => {
   it("creates one entry that runs the bundled upstream", () => {
     const f = join(tmp(), ".claude.json");

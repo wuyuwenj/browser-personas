@@ -35,6 +35,12 @@ its own tabs.
 `init --revert` puts your config back byte for byte. `init` is safe to run again; it
 never wraps an entry twice.
 
+If an entry runs a **custom launcher script** rather than chrome-devtools-mcp directly,
+`init` leaves it alone and says so. A launcher like that usually picks a browser profile
+at runtime — a flag the shim cannot see in the config, and one upstream refuses to
+combine with `--wsEndpoint`. That job is what this tool takes over, so re-run with
+`--replace-launcher` to swap it for the bundled upstream.
+
 ## Try it in two terminals
 
 Open two terminals, start `claude` in each, and ask each one to open a page. Then ask

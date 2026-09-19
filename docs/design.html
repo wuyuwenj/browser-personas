@@ -527,6 +527,8 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
     </ul>
     <h3>Three guards a write surface needs that a read surface does not</h3>
     <p>A token minted per daemon and carried in the link; a loopback <code>Host</code>, which is what DNS rebinding controls and a browser cannot forge; and JSON on any write with a body, which a cross-site form cannot send. The CDP endpoints stay ungated — chrome-devtools-mcp has nowhere to put a token, and they expose no credentials. All five guards are mutation-verified.</p>
+    <h3>A custom launcher is not wrappable</h3>
+    <p>Dry-running <code>init</code> against a real config found an entry running a lease script that picks a Chrome profile at runtime. The shim strips only the browser-choosing flags it can see in the config, so wrapping that would produce a server that adds <code>--userDataDir</code> next to our <code>--wsEndpoint</code> and dies on start. Those entries are now detected, left alone and reported, with <code>--replace-launcher</code> to swap in the bundled upstream — which is the honest resolution, since picking a browser is the job this tool takes over.</p>
     <h3>Three defects the tests caught</h3>
     <ul>
       <li><b>A bodyless DELETE cannot carry a content type</b>, so requiring JSON on every write made the console's own delete button unusable. The rule now applies only when a body is present; a bodyless cross-site write is still stopped by the Origin check and by a preflight no form can avoid.</li>
@@ -624,6 +626,8 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
     <p><code>--browserUrl</code> cannot carry a persona or an owner name, and a static config entry cannot hold a per-session id — every session using it would share one, and reclaim-after-reconnect would hand one session another's tabs. <code>browser-personas exec</code> computes the id at spawn time from the controlling terminal and runs the user's own command with the endpoint appended, stripping any browser-choosing flag they had, because a leftover <code>--browserUrl</code> would win the argument.</p>
     <h3>Upstream is bundled</h3>
     <p>chrome-devtools-mcp moved from a dev dependency to a real one. Resolution order is the user's own command, then the bundled copy, then <code>npx @latest</code>, and the shim says which on stderr. A version we tested beats a version we haven't; the CI matrix now tests exactly what ships. Chrome itself is never fetched quietly.</p>
+    <h3>A custom launcher is not wrappable</h3>
+    <p>Dry-running <code>init</code> against a real config found an entry running a lease script that picks a Chrome profile at runtime. The shim strips only the browser-choosing flags it can see in the config, so wrapping that would produce a server that adds <code>--userDataDir</code> next to our <code>--wsEndpoint</code> and dies on start. Those entries are now detected, left alone and reported, with <code>--replace-launcher</code> to swap in the bundled upstream — which is the honest resolution, since picking a browser is the job this tool takes over.</p>
     <h3>Three defects the tests caught</h3>
     <ul>
       <li><b>The owner id came out as <code>tty--dev-ttys004</code></b>: the prefix was added before <code>/dev/</code> was stripped.</li>

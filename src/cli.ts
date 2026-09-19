@@ -54,6 +54,7 @@ const HELP = `browser-personas — one Chrome, many agents
 
   init [--persona NAME]... [--registry]  route your chrome-devtools-mcp entries through the
                                        proxy; add a chrome-devtools-<name> entry per persona
+  init --replace-launcher              swap a custom launcher script for the bundled upstream
   init --revert                        restore the agent configs init changed
   exec [--persona NAME] -- CMD...      (what init installs) run chrome-devtools-mcp through
                                        the proxy with a per-session owner id
@@ -105,6 +106,7 @@ async function main(): Promise<number> {
         personas,
         registry: Boolean(flags["registry"]),
         create: true,
+        replaceLaunchers: Boolean(flags["replace-launcher"]),
       };
       const hostFiles = flags["host-file"] ? [{ name: "custom" as const, path: String(flags["host-file"]) }] : knownHosts();
       let anything = false;
@@ -114,7 +116,13 @@ async function main(): Promise<number> {
         for (const n of report.changed) console.log(`${hostCfg.name}: ${n} now runs through the proxy (your flags kept)`);
         for (const n of report.created) console.log(`${hostCfg.name}: added ${n}`);
         for (const n of report.skipped) console.log(`${hostCfg.name}: ${n} already routed`);
-        anything ||= report.changed.length + report.created.length > 0;
+        for (const n of report.replaced) console.log(`${hostCfg.name}: ${n} launcher replaced by the bundled chrome-devtools-mcp`);
+        for (const n of report.warned) {
+          console.log(`${hostCfg.name}: ${n} LEFT ALONE — it runs a custom launcher, which may pick its own browser`);
+          console.log(`             at runtime and conflict with the proxy. That job is what browser-personas does now:`);
+          console.log(`             re-run with --replace-launcher to use the bundled chrome-devtools-mcp instead.`);
+        }
+        anything ||= report.changed.length + report.created.length + report.replaced.length > 0;
       }
       const upstream = resolveUpstream([]);
       console.log(`upstream:    chrome-devtools-mcp (${upstream.source === "bundled" ? "bundled with browser-personas" : "npx @latest"}) — your own entry's command wins if it had one`);

@@ -49,9 +49,33 @@ export type RewriteOptions = {
   registry?: boolean;
   /** Create a `chrome-devtools` entry when the file has none. */
   create?: boolean;
+  /** Swap a custom launcher for the bundled upstream instead of wrapping it. */
+  replaceLaunchers?: boolean;
 };
 
-export type RewriteReport = { changed: string[]; created: string[]; skipped: string[] };
+export type RewriteReport = {
+  changed: string[];
+  created: string[];
+  skipped: string[];
+  /** Entries whose command is a custom launcher the shim cannot see inside. */
+  warned: string[];
+  replaced: string[];
+};
+
+/**
+ * A command the shim can reason about: it IS chrome-devtools-mcp, or a runner that will
+ * hand our flags straight to it. Anything else is somebody's own launcher script, which
+ * may add its own `--userDataDir` at runtime — a flag upstream refuses to combine with
+ * `--wsEndpoint`. The shim strips only what it can see in the config, so a launcher like
+ * that would produce a server that dies on start. Those get flagged, or replaced by the
+ * bundled upstream on request, because a launcher that picks a browser is precisely the
+ * job this tool takes over.
+ */
+export function isKnownUpstream(entry: Entry): boolean {
+  const cmd = (entry.command ?? "").split("/").pop() ?? "";
+  if (/^(npx|node|bunx|pnpx|chrome-devtools-mcp)(\.exe)?$/.test(cmd)) return true;
+  return (entry.args ?? []).some((a) => /chrome-devtools-mcp/.test(a));
+}
 
 function throughShim(entry: Entry, launcher: Launcher, persona: string): Entry {
   const user = entry.command ? [entry.command, ...(entry.args ?? [])] : [];
@@ -87,6 +111,15 @@ function rewriteServers(servers: JsonObject, options: RewriteOptions, report: Re
       report.skipped.push(`${scope}${name}`);
       continue;
     }
+    if (entry.command && !isKnownUpstream(entry)) {
+      if (options.replaceLaunchers) {
+        servers[name] = throughShim({ ...(entry.env ? { env: entry.env } : {}) }, options.launcher, options.persona);
+        report.replaced.push(`${scope}${name}`);
+        continue;
+      }
+      report.warned.push(`${scope}${name} (${entry.command})`);
+      continue;
+    }
     servers[name] = throughShim(entry, options.launcher, options.persona);
     report.changed.push(`${scope}${name}`);
   }
@@ -120,7 +153,7 @@ function rewriteServers(servers: JsonObject, options: RewriteOptions, report: Re
 }
 
 export function rewriteHostFile(file: string, options: RewriteOptions): RewriteReport {
-  const report: RewriteReport = { changed: [], created: [], skipped: [] };
+  const report: RewriteReport = { changed: [], created: [], skipped: [], warned: [], replaced: [] };
   let parsed: JsonObject = {};
   if (existsSync(file)) {
     try {
@@ -141,7 +174,7 @@ export function rewriteHostFile(file: string, options: RewriteOptions): RewriteR
     }
   }
 
-  if (report.changed.length + report.created.length === 0) return report;
+  if (report.changed.length + report.created.length + report.replaced.length === 0) return report;
   if (existsSync(file) && !existsSync(backupPath(file))) copyFileSync(file, backupPath(file));
   writeFileSync(file, `${JSON.stringify(parsed, null, 2)}\n`);
   return report;
