@@ -637,5 +637,20 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.9.2 — SSO, for real this time</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-23, from issue #1.</b> Every login test until now used one origin, so nothing ever crossed to an identity provider. Four defects lived in that gap.</p>
+    <ul>
+      <li><b><code>read_only: strict</code> blocked every SSO sign-in.</b> <code>auth_origins</code> fed the navigation fence but not the read-only check, and signing in is POSTs to the provider. Auth origins are now exempt from <code>read_only</code>; the promise is about the app.</li>
+      <li><b>Auto-save could capture a logged-out session mid-SSO.</b> With no probe, "not the start URL and not a /login path" was the whole test, and an identity provider's page passes it. Now the page must be on the app's own origin, not look like a sign-in page, and the human must have typed or gone out and come back. The inferred probe is the app's path only — no query string, which held a one-time OAuth <code>state</code>.</li>
+      <li><b>A login never settled after the target swap.</b> A cross-origin round trip can replace the page target; the session now follows the tab and re-attaches.</li>
+      <li><b>Hand edits to <code>manifest.yaml</code> were ignored until restart.</b> The manifest is re-read when the file's mtime changes.</li>
+    </ul>
+    <p>One mutation survived the first pass: every provider URL in the test contained <code>signin</code>, so the path guard masked the missing origin check. Google's <code>/AccountChooser</code> does not oblige; the test now includes it.</p>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>

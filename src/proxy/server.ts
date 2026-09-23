@@ -497,7 +497,13 @@ export class BrowserPersonasDaemon {
     const persona = ownerId ? this.#personaOf(ownerId) : null;
     const manifest = persona ? this.#personas.manifest(persona) : null;
 
-    const verdict = checkRequest(manifest, { method: httpMethod, url, body, isNavigation });
+    const verdict = checkRequest(manifest, {
+      method: httpMethod,
+      url,
+      body,
+      isNavigation,
+      headers: (request["headers"] as Record<string, string>) ?? {},
+    });
     if (verdict.allowed) {
       const extra = policyHeaders(manifest);
       const headers = Object.entries({

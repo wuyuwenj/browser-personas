@@ -126,3 +126,44 @@ describe("auth origins", () => {
     expect(primaryOrigins(manifest)).toEqual(["http://localhost:3005"]);
   });
 });
+
+describe("read-only and the identity provider", () => {
+  const sso: PersonaManifest = {
+    name: "katy",
+    env: "staging",
+    read_only: "strict",
+    accounts: [{ origin: "https://app.example.com" }],
+    auth_origins: ["https://accounts.google.com"],
+  };
+
+  it("lets a strict persona POST to its identity provider, because signing in is POSTs", () => {
+    const verdict = checkRequest(sso, {
+      method: "POST",
+      url: "https://accounts.google.com/v3/signin/_/AccountsSignInUi/data/batchexecute",
+      isNavigation: false,
+    });
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it("still blocks a POST to the app itself — the promise is about the app, not the IdP", () => {
+    expect(checkRequest(sso, { method: "POST", url: "https://app.example.com/api/x", isNavigation: false }).allowed)
+      .toBe(false);
+  });
+
+  it("does not exempt a host that merely looks like the provider", () => {
+    expect(
+      checkRequest(sso, { method: "POST", url: "https://accounts.google.com.evil.example/x", isNavigation: false }).allowed,
+    ).toBe(false);
+  });
+
+  it("names cooperative when strict blocks a Next.js server action", () => {
+    const verdict = checkRequest(sso, {
+      method: "POST",
+      url: "https://app.example.com/dashboard",
+      isNavigation: false,
+      headers: { "Next-Action": "7f3a9c" },
+    });
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.allowed === false && verdict.reason).toContain("read_only: cooperative");
+  });
+});

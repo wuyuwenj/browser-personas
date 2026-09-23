@@ -63,8 +63,8 @@ export type LoginSessionOptions = {
 
 function safePath(url: string): string | undefined {
   try {
-    const parsed = new URL(url);
-    return parsed.pathname + parsed.search;
+    const path = new URL(url).pathname;
+    return path && path !== "/" ? path : undefined;
   } catch {
     return undefined;
   }
@@ -173,14 +173,11 @@ export class LoginSession {
     let signedIn = false;
 
     if (!this.#finished && this.#pageSession) {
-      try {
-        const info = await this.#cdp.send("Target.getTargetInfo", { targetId: this.#targetId ?? "" });
-        const targetInfo = info["targetInfo"] as { url?: string } | undefined;
-        currentUrl = targetInfo?.url ?? currentUrl;
+      const resolved = await this.#resolvePage();
+      if (resolved) {
+        currentUrl = resolved;
         const origin = normalizeOrigin(currentUrl);
         if (/^https?:/.test(origin)) this.#visited.add(origin);
-      } catch {
-        /* the human may have closed the tab; the poll below still decides */
       }
 
       // Read before the probe, so a redirect away from the form does not lose it.
@@ -194,9 +191,7 @@ export class LoginSession {
         probeStatus = await this.#evaluateStatus(probe);
         signedIn = probeStatus !== null && probeStatus >= 200 && probeStatus < 300;
       } else {
-        // With no probe, the honest signal is that the app moved the human off the page
-        // it landed them on.
-        signedIn = currentUrl !== this.#options.url && !/\/login\b/.test(currentUrl);
+        signedIn = this.#looksSignedInWithoutProbe(currentUrl);
       }
       if (signedIn) this.#landedAt = currentUrl;
       this.#stable = signedIn ? this.#stable + 1 : 0;
@@ -217,6 +212,72 @@ export class LoginSession {
       cookiesSaved: this.#cookiesSaved,
       error: this.#error,
     };
+  }
+
+  /**
+   * The page the human is on now, following the tab rather than one page target.
+   *
+   * Under Chrome's tab-target model a cross-origin round trip — out to an identity
+   * provider and back — can replace the page target. The original id then answers nothing,
+   * the URL falls back to the start page, the probe is bound to a dead session, and the
+   * login never settles. So when the id we hold stops answering, find the live page and
+   * re-attach to it.
+   */
+  async #resolvePage(): Promise<string | null> {
+    if (this.#targetId) {
+      try {
+        const info = await this.#cdp.send("Target.getTargetInfo", { targetId: this.#targetId });
+        const url = (info["targetInfo"] as { url?: string } | undefined)?.url;
+        if (url) return url;
+      } catch {
+        /* replaced or closed — look for the live one below */
+      }
+    }
+    try {
+      const all = await this.#cdp.send("Target.getTargets", {});
+      const pages = ((all["targetInfos"] as { targetId: string; type: string; url: string }[] | undefined) ?? [])
+        .filter((t) => t.type === "page" && /^https?:/.test(t.url));
+      // The throwaway browser holds only the human's own tabs; the newest is where they are.
+      const live = pages[pages.length - 1];
+      if (!live) return null;
+      if (live.targetId !== this.#targetId) {
+        const attached = await this.#cdp.send("Target.attachToTarget", { targetId: live.targetId, flatten: true });
+        this.#targetId = live.targetId;
+        this.#pageSession =
+          typeof attached["sessionId"] === "string" ? (attached["sessionId"] as string) : this.#pageSession;
+      }
+      return live.url;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Signed in, judged without a probe. Weak by nature, so it is held to three conditions:
+   *
+   * - the page is on the APP's origin. A sign-in with Google puts the human on
+   *   accounts.google.com, which is neither the start URL nor a /login path, and under
+   *   the old rule that alone counted as signed in — so auto-save captured a logged-out
+   *   session mid-flow;
+   * - the path does not look like a sign-in page;
+   * - the human actually did something: typed an identifier, or went out to another
+   *   origin and came back. A start URL that redirects when logged out (/admin → /)
+   *   otherwise "succeeds" before anyone has touched the page.
+   *
+   * With a probe none of this is needed; the console says so.
+   */
+  #looksSignedInWithoutProbe(currentUrl: string): boolean {
+    const app = normalizeOrigin(this.#options.url);
+    if (normalizeOrigin(currentUrl) !== app) return false;
+    let path = "";
+    try {
+      path = new URL(currentUrl).pathname;
+    } catch {
+      return false;
+    }
+    if (/\/(log-?in|sign-?in|auth|oauth|sso|callback)\b/i.test(path)) return false;
+    const leftAndCameBack = [...this.#visited].some((o) => o !== app);
+    return this.#identifiers.length > 0 || leftAndCameBack;
   }
 
   /** Stop saving by itself, so the human can keep using the window first. */
@@ -357,7 +418,11 @@ export class LoginSession {
         bestIdentifier(this.#identifiers) ?? emailFromTokens(sessionValues(cookies, storage));
 
       const current = existing ? findAccount(existing, appOrigin) : undefined;
-      const inferredProbe = current?.probe ?? (this.#landedAt ? safePath(this.#landedAt) : undefined);
+      // Only a page on the app's own origin can be its probe, and only its path: a query
+      // string on a post-login URL is often a one-time OAuth `state` that 400s next time.
+      const inferredProbe =
+        current?.probe ??
+        (this.#landedAt && normalizeOrigin(this.#landedAt) === appOrigin ? safePath(this.#landedAt) : undefined);
       // Only the website that was signed in to is touched; the persona's other sites keep
       // whatever they were configured with.
       const withAccount = upsertAccount(existing ?? { name: this.persona }, {

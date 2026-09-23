@@ -157,6 +157,10 @@ page shell and nothing inside it.
 | `inspect` | plus POSTs whose body reads (GraphQL `query`, not `mutation`) | GraphQL apps |
 | `cooperative` | plus any POST, stamped `X-Read-Only: 1` | server-action apps, where only the app knows |
 
+Requests to a persona's `auth_origins` are exempt from `read_only`: signing in is POSTs
+to the identity provider, and the read-only promise is about the app, not the IdP. A
+`strict` persona blocking a Next.js server action says so and points at `cooperative`.
+
 A blocked request is answered with a 403 whose body names the policy, so the agent's
 network log explains itself instead of looking like a flaky site.
 

@@ -1,8 +1,9 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import {
   allowedOrigins,
   jarPath,
   loadManifest,
+  manifestPath,
   type PersonaManifest,
 } from "../personas/manifest.js";
 import { hasPolicy } from "../personas/policy.js";
@@ -12,6 +13,14 @@ import type { OwnerId } from "./ownership.js";
 
 export const DEFAULT_PERSONA = "default";
 
+function manifestMtime(personasDir: string, name: string): number | undefined {
+  try {
+    return statSync(manifestPath(personasDir, name)).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
 export type PersonaContext = {
   name: string;
   manifest: PersonaManifest | null;
@@ -19,6 +28,8 @@ export type PersonaContext = {
   browserContextId?: string;
   /** Set when a response was seen writing a cookie, so the jar is only saved when it changed. */
   dirty: boolean;
+  /** mtime of manifest.yaml when `manifest` was read; a different value means re-read. */
+  manifestMtime?: number;
 };
 
 type Upstream = {
@@ -65,11 +76,30 @@ export class PersonaManager {
   /** Re-read a persona's manifest into its live context, so an edit takes effect at once. */
   refresh(name: string): void {
     const ctx = this.#contexts.get(name);
-    if (ctx) ctx.manifest = loadManifest(this.#personasDir, name);
+    if (!ctx) return;
+    ctx.manifest = loadManifest(this.#personasDir, name);
+    ctx.manifestMtime = manifestMtime(this.#personasDir, name);
   }
 
+  /**
+   * The persona's manifest, re-read whenever the file on disk changes.
+   *
+   * The console refreshes its cache explicitly, but a hand edit of manifest.yaml has no
+   * such hook — and a cached copy that silently outlives the file is the same stale-cache
+   * bug the console had in v0.4, entered through the other door. One stat per lookup is
+   * cheaper than being wrong about a persona's fence.
+   */
   manifest(name: string): PersonaManifest | null {
-    return this.#contexts.get(name)?.manifest ?? loadManifest(this.#personasDir, name);
+    const ctx = this.#contexts.get(name);
+    const mtime = manifestMtime(this.#personasDir, name);
+    if (ctx) {
+      if (ctx.manifestMtime !== mtime) {
+        ctx.manifest = loadManifest(this.#personasDir, name);
+        ctx.manifestMtime = mtime;
+      }
+      return ctx.manifest;
+    }
+    return loadManifest(this.#personasDir, name);
   }
 
   context(name: string): PersonaContext | undefined {

@@ -60,6 +60,8 @@ function looksLikeRead(body: string | undefined): boolean {
 }
 
 export type RequestFacts = {
+  /** Request headers, when known. `Next-Action` marks a Next.js server action. */
+  headers?: Record<string, string>;
   method: string;
   url: string;
   body?: string;
@@ -107,13 +109,51 @@ export function checkReadOnly(level: ReadOnlyLevel, facts: RequestFacts): Policy
   return { allowed: true };
 }
 
+/**
+ * True when the request goes to one of the persona's identity-provider origins.
+ *
+ * Those hosts are in the manifest only so sign-in can work, and signing in is POSTs —
+ * credentials, consent, the OIDC callback. The read-only promise is about the app the
+ * persona is scoped to, not the IdP; enforcing it there makes every SSO sign-in fail
+ * with the provider's generic "Something went wrong" and nothing to say why.
+ */
+export function isAuthOrigin(manifest: PersonaManifest | null, url: string): boolean {
+  if (!manifest?.auth_origins?.length) return false;
+  let origin: string;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    return false;
+  }
+  return manifest.auth_origins.map(normalizeOrigin).includes(origin);
+}
+
 export function checkRequest(manifest: PersonaManifest | null, facts: RequestFacts): PolicyVerdict {
   if (facts.isNavigation !== false) {
     const origin = checkOrigin(manifest, facts.url);
     if (!origin.allowed) return origin;
   }
   if (!manifest) return { allowed: true };
-  return checkReadOnly(manifest.read_only ?? false, facts);
+  if (isAuthOrigin(manifest, facts.url)) return { allowed: true };
+  const verdict = checkReadOnly(manifest.read_only ?? false, facts);
+  // A server action is a POST that usually only reads. Blocking one under `strict` is
+  // correct but baffling — the persona cannot even load its own dashboard — so the
+  // reason names the level that fits.
+  if (!verdict.allowed && manifest.read_only === "strict" && hasServerActionHeader(facts.headers)) {
+    return {
+      allowed: false,
+      reason:
+        `${verdict.reason} This is a Next.js server action (Next-Action header), which is a POST even ` +
+        `when it only reads. For an app built this way use read_only: cooperative, and let the app ` +
+        `refuse writes on the X-Read-Only header.`,
+    };
+  }
+  return verdict;
+}
+
+function hasServerActionHeader(headers: Record<string, string> | undefined): boolean {
+  if (!headers) return false;
+  return Object.keys(headers).some((k) => k.toLowerCase() === "next-action");
 }
 
 /** Headers the proxy adds on a cooperative persona, so the app can refuse its own writes. */
