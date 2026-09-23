@@ -31,6 +31,18 @@ const REGISTRY_TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "use_persona",
+    description:
+      "Browse as a persona from now on. Every page you open after this call is signed in as " +
+      "that identity; pages already open stay as they were. Call list_personas first to see " +
+      "who is available. Use \"default\" to go back to the shared, anonymous browser.",
+    inputSchema: {
+      type: "object",
+      properties: { name: { type: "string", description: "Persona name, or \"default\"" } },
+      required: ["name"],
+    },
+  },
+  {
     name: "verify_persona",
     description:
       "Check whether a persona is still signed in, by fetching its probe page through its own " +
@@ -130,7 +142,7 @@ async function daemonFetch(
 }
 
 /**
- * The registry: five tools and one prompt, nothing else.
+ * The registry: six tools and one prompt, nothing else.
  *
  * It used to re-export chrome-devtools-mcp's whole toolset as well, so one entry could
  * carry everything. That doubled the schema every agent loads on every session and tied
@@ -185,6 +197,29 @@ export async function startRegistry(options: RegistryOptions): Promise<void> {
     switch (request.params.name) {
       case "list_personas":
         return listPersonas(deps);
+      case "use_persona": {
+        const name = String(args["name"] ?? "");
+        const res = await daemonFetch(options, `/api/owners/${encodeURIComponent(options.owner)}/persona`, {
+          method: "POST",
+          body: { persona: name },
+        });
+        if (!res) return text("The browser-personas daemon is not running. Start it with: browser-personas start", true);
+        const json = (await res.json()) as {
+          error?: string;
+          persona?: string;
+          previous?: string;
+          sharedWith?: string[];
+        };
+        if (!res.ok) return text(json.error ?? "Could not switch persona.", true);
+        const shared = json.sharedWith?.length
+          ? ` Shared login: ${json.sharedWith.join(", ")} also hold "${json.persona}", so every action is ` +
+            `attributed to the same signed-in user, and a sign-out by any of you signs out all of you.`
+          : "";
+        return text(
+          `Now browsing as "${json.persona}" (was "${json.previous}"). New pages open signed in as ` +
+            `this persona; pages already open are unchanged.${shared}`,
+        );
+      }
       case "verify_persona":
         return verifyPersona(deps, String(args["name"] ?? ""));
       case "note_persona":

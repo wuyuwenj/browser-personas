@@ -93,6 +93,12 @@ export class BrowserPersonasDaemon {
   #personas: PersonaManager;
   #consoleToken: string;
   #logins = new Map<string, LoginSession>();
+  /**
+   * The persona each owner chose at runtime with `use_persona`. Kept apart from the live
+   * owner record because an agent may choose before its browser has connected at all —
+   * chrome-devtools-mcp opens its connection lazily, on the first browser tool call.
+   */
+  #chosenPersona = new Map<OwnerId, string>();
   #loginWatch: NodeJS.Timeout | null = null;
   /** Sessions the proxy has taken over request interception on, for a restricted persona. */
   #intercepted = new Set<string>();
@@ -240,6 +246,45 @@ export class BrowserPersonasDaemon {
       this.registry.removeTarget(targetId);
       this.registry.forgetOwner("__verify");
     }
+  }
+
+  /**
+   * Switch an owner to another persona, mid-session.
+   *
+   * One chrome-devtools-mcp per persona meant a Node process and 29 more tools per
+   * identity in every session — the multiplication this project exists to remove — and it
+   * made the agent choose an identity by server name before it knew anything. Now the
+   * agent chooses at runtime. Tabs opened from here on land in the new persona's browser
+   * context; tabs already open stay where they are, so nothing moves under the agent.
+   */
+  async usePersona(
+    ownerId: OwnerId,
+    persona: string,
+  ): Promise<{ ok: true; persona: string; previous: string; sharedWith: string[] } | { ok: false; reason: string }> {
+    if (persona !== DEFAULT_PERSONA && !loadManifest(this.#personasDir, persona)) {
+      const names = this.#personas.names();
+      return {
+        ok: false,
+        reason: `No persona named "${persona}". Available: ${names.length ? names.join(", ") : "none yet"}.`,
+      };
+    }
+    const owner = this.registry.owner(ownerId);
+    const previous = owner?.persona ?? this.#chosenPersona.get(ownerId) ?? DEFAULT_PERSONA;
+    if (previous !== persona) {
+      const lease = this.#personas.claimLease(persona, ownerId);
+      if (!lease.ok) {
+        return { ok: false, reason: `"${persona}" is exclusive and held by ${lease.heldBy}. Pick another or wait.` };
+      }
+      this.#personas.releaseLease(previous, ownerId);
+    }
+    await this.#personas.ensure(persona).catch(() => undefined);
+    this.#chosenPersona.set(ownerId, persona);
+    if (owner) owner.persona = persona;
+    const sharedWith = this.registry
+      .holdersOf(persona)
+      .map((o) => o.id)
+      .filter((id) => id !== ownerId && id !== "__verify");
+    return { ok: true, persona, previous, sharedWith };
   }
 
   /** Let the human keep the window open and save by hand. */
@@ -678,9 +723,13 @@ export class BrowserPersonasDaemon {
 
   #onClient(ws: WebSocket, req: IncomingMessage): void {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
-    const persona = url.searchParams.get("persona") ?? parsePathPersona(url.pathname) ?? DEFAULT_PERSONA;
     const ownerId =
       url.searchParams.get("owner") ?? parsePathOwner(url.pathname) ?? `conn-${randomUUID().slice(0, 8)}`;
+    const persona =
+      this.#chosenPersona.get(ownerId) ??
+      url.searchParams.get("persona") ??
+      parsePathPersona(url.pathname) ??
+      DEFAULT_PERSONA;
     const connId = randomUUID();
     const now = this.#now();
 
@@ -731,7 +780,7 @@ export class BrowserPersonasDaemon {
       const stillConnected = [...this.#clients.values()].some((c) => c.ownerId === ownerId);
       if (!stillConnected) {
         this.registry.disconnectOwner(ownerId, this.#now());
-        this.#personas.releaseLease(persona, ownerId);
+        this.#personas.releaseLease(this.registry.owner(ownerId)?.persona ?? persona, ownerId);
         void this.#personas.persistAll().catch(() => undefined);
       }
     });
@@ -776,14 +825,14 @@ export class BrowserPersonasDaemon {
         error: {
           code: CDP_SERVER_ERROR,
           message:
-            `Fetch is held by browser-personas on this page: persona "${client.persona}" restricts ` +
+            `Fetch is held by browser-personas on this page: persona "${this.#personaOf(client.ownerId) ?? client.persona}" restricts ` +
             `where it may go. Use a persona without an origin allowlist or read_only setting.`,
         },
       });
       return;
     }
 
-    const manifest = this.#personas.manifest(client.persona);
+    const manifest = this.#personas.manifest(this.#personaOf(client.ownerId) ?? client.persona);
     const decision = decideInbound(this.registry, client.ownerId, command, now, {
       check: (url) => checkRequest(manifest, { method: "GET", url }),
     });
@@ -825,7 +874,8 @@ export class BrowserPersonasDaemon {
     if (command.method === "Target.createTarget") {
       // Every tab an agent opens lands in its persona's context, so the cookies it sees
       // are that persona's and nobody else's.
-      const contextId = this.#personas.context(client.persona)?.browserContextId;
+      // The owner's CURRENT persona: `use_persona` may have changed it since connect.
+      const contextId = this.#personas.context(this.#personaOf(client.ownerId) ?? client.persona)?.browserContextId;
       if (contextId) {
         out["params"] = { ...(out["params"] as Record<string, unknown>), browserContextId: contextId };
       }
@@ -950,6 +1000,7 @@ export class BrowserPersonasDaemon {
       autofillLogin: (persona: string) => this.autofillLogin(persona),
       holdLogin: (persona: string) => this.holdLogin(persona),
       verifyPersona: (persona: string) => this.verifyPersona(persona),
+      usePersona: (owner: string, persona: string) => this.usePersona(owner, persona),
       reloadPersona: (persona: string) => {
         this.#personas.refresh(persona);
         void this.#personas.ensure(persona).catch(() => undefined);

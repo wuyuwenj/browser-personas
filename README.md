@@ -170,23 +170,29 @@ claiming to block writes it cannot identify would be a false guarantee.
 
 ## Browsing as a persona
 
-A browsing session is one persona, chosen by which entry it runs through:
+One `chrome-devtools` entry, and the agent switches identity at runtime:
 
-```bash
-npx browser-personas init --persona katy --persona kendrick
+```
+list_personas            → who exists, what each may reach, who is using it
+use_persona("katy")      → every page opened from now on is signed in as katy
+new_page(...)            → the usual chrome-devtools tool, unchanged
 ```
 
-adds `chrome-devtools-katy` and `chrome-devtools-kendrick` beside your `chrome-devtools`
-entry, each a copy of your own command through the shim. An agent picks by server name,
-which is how MCP hosts already model "which one". Tabs it opens carry that login.
+Pages already open stay where they were, so nothing moves under the agent. Switching is
+fenced like everything else: an exclusive persona held by another session is refused by
+name, and the new persona's allowlist applies to the next navigation.
 
-## Let the agent discover identities
+This replaced one MCP entry per persona, which cost a Node process and 29 more tools per
+identity in every session. `init --pin-persona NAME` still adds a `chrome-devtools-NAME`
+entry locked to one identity, for a session that should never be anything else.
 
-Optional. `init --registry` adds a second, five-tool server so an agent can read who is
-available and who is using what:
+## The registry
+
+`init` adds a second, six-tool server beside chrome-devtools (`--no-registry` skips it):
 
 | Tool | What the agent uses it for |
 |---|---|
+| `use_persona` | browse as this identity from now on; says who else holds it |
 | `list_personas` | who each identity is, what it may reach, who is holding it, and any notes |
 | `verify_persona` | "am I still signed in?" — fetches the probe page through that persona's cookies |
 | `note_persona` | leave a note for whoever uses it next; `ttl_hours` for anything about data state |
@@ -317,8 +323,8 @@ token, and they expose no credentials.
 
 ```
 browser-personas init                 route chrome-devtools-mcp entries through the proxy
-browser-personas init --persona NAME  add a chrome-devtools-NAME entry (repeatable)
-browser-personas init --registry      add the five-tool registry server
+browser-personas init --pin-persona N add a chrome-devtools-N entry locked to one identity
+browser-personas init --no-registry   skip the registry server
 browser-personas init --revert        restore your configs
 browser-personas exec -- CMD...       what init installs; runs CMD through the proxy
 browser-personas login NAME --url U   log a persona in once; saves itself when you are done
@@ -348,9 +354,9 @@ you, the same as it can read Chrome's. The isolation here is between well-behave
 
 ## Status
 
-v0.9: transparent mode — your chrome-devtools-mcp, your flags, one Chrome underneath;
-personas that hold several websites and survive any login method; the optional registry;
-the console. Still ahead are per-owner audit logs and rate limits, IndexedDB for the
+v0.10: one chrome-devtools entry, identity chosen at runtime with `use_persona`;
+transparent mode over your own chrome-devtools-mcp; personas that hold several websites
+and survive any login method; the console.
 few SDKs that use it, and Linux vault coverage. The design and a per-milestone record of what the
 real browser taught us are in [`docs/design.html`](docs/design.html).
 

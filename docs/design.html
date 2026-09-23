@@ -652,5 +652,15 @@ npx tabscope init --revert        # restore the original MCP configs</code></pre
   </div>
 </section>
 
+
+<section>
+  <div class="label"><div class="n">Built</div><h2>v0.10 — one entry, identity at runtime</h2></div>
+  <div class="body">
+    <p><b>Shipped 2026-09-23.</b> v0.9 gave each persona its own chrome-devtools entry, because a chrome-devtools-mcp process only learns its persona at launch. That reintroduced the multiplication this project exists to remove: a Node process and 29 more tools per identity in every session, and an agent forced to choose an identity by server name before it knew anything.</p>
+    <p>Now the registry's <code>use_persona</code> tells the daemon which persona an owner is, and the proxy puts every page that owner opens afterwards into that persona's context. It works because the shim and the registry run under the same session and derive the same owner id. The choice is remembered before the browser connects, since chrome-devtools-mcp connects lazily. Pages already open stay put. Leases and the allowlist follow the switch.</p>
+    <p><code>init</code> collapses the per-persona entries it made. The first version of that collapse ran after wrapping, so a user's own <code>chrome-devtools-canary</code> was wrapped and then deleted as if it were ours; the test caught it. One mutation survived the first pass: the fence test switched persona before the browser connected, so the connection already carried the persona and the runtime path was never exercised.</p>
+  </div>
+</section>
+
 <footer>Draft for discussion. Every number above is an estimate until measured.</footer>
 </div>

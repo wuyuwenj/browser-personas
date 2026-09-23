@@ -1,6 +1,6 @@
 {
   "name": "browser-personas",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "description": "One Chrome, many agents: a CDP proxy that gives every agent its own logged-in identity and its own tabs.",
   "type": "module",
   "license": "MIT",

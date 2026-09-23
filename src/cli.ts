@@ -13,6 +13,13 @@ import { allowedOrigins, loadManifest } from "./personas/manifest.js";
 
 type Flags = Record<string, string | boolean | string[]>;
 
+function pinFlags(flags: Flags): string[] {
+  const v = flags["pin-persona"];
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") return [v];
+  return [];
+}
+
 /** `--persona a --persona b` collects; a single `--persona a` is a string. */
 function personaFlags(flags: Flags): string[] {
   const v = flags["persona"];
@@ -52,8 +59,10 @@ function parseFlags(argv: string[]): { command: string; flags: Flags } {
 
 const HELP = `browser-personas — one Chrome, many agents
 
-  init [--persona NAME]... [--registry]  route your chrome-devtools-mcp entries through the
-                                       proxy; add a chrome-devtools-<name> entry per persona
+  init                                 route your chrome-devtools-mcp entry through the proxy,
+                                       add the registry; agents switch with use_persona
+  init --pin-persona NAME              also add a chrome-devtools-NAME entry locked to NAME
+  init --no-registry                   skip the registry server
   init --replace-launcher              swap a custom launcher script for the bundled upstream
   init --revert                        restore the agent configs init changed
   exec [--persona NAME] -- CMD...      (what init installs) run chrome-devtools-mcp through
@@ -61,8 +70,7 @@ const HELP = `browser-personas — one Chrome, many agents
   login NAME --url URL [--env staging] log a persona in once; the cookies persist
   personas                             list personas, their scope and login state
   console                              print the local console link (token included)
-  mcp                                  the persona registry as an MCP server (5 tools);
-                                       optional — init --registry adds it
+  mcp                                  the persona registry as an MCP server (6 tools)
   start [--port N] [--headed]          run the daemon in the foreground
   status [--port N]                    who holds which tabs
   stop [--config-dir DIR]              stop a running daemon
@@ -99,14 +107,17 @@ async function main(): Promise<number> {
         console.log("             then re-run init (or pass --chrome-path to start).");
       }
 
-      const personas = personaFlags(flags);
+      // `--pin-persona NAME` keeps a session locked to one identity; the default is one
+      // entry plus the registry, and personas are switched at runtime with use_persona.
+      const personas = [...personaFlags(flags), ...pinFlags(flags)];
       const options = {
         launcher: selfLauncher(),
         persona: "default",
         personas,
-        registry: Boolean(flags["registry"]),
+        registry: !flags["no-registry"],
         create: true,
         replaceLaunchers: Boolean(flags["replace-launcher"]),
+        collapse: true,
       };
       const hostFiles = flags["host-file"] ? [{ name: "custom" as const, path: String(flags["host-file"]) }] : knownHosts();
       let anything = false;
@@ -116,13 +127,14 @@ async function main(): Promise<number> {
         for (const n of report.changed) console.log(`${hostCfg.name}: ${n} now runs through the proxy (your flags kept)`);
         for (const n of report.created) console.log(`${hostCfg.name}: added ${n}`);
         for (const n of report.skipped) console.log(`${hostCfg.name}: ${n} already routed`);
+        for (const n of report.removed) console.log(`${hostCfg.name}: removed ${n} — switch personas with use_persona instead`);
         for (const n of report.replaced) console.log(`${hostCfg.name}: ${n} launcher replaced by the bundled chrome-devtools-mcp`);
         for (const n of report.warned) {
           console.log(`${hostCfg.name}: ${n} LEFT ALONE — it runs a custom launcher, which may pick its own browser`);
           console.log(`             at runtime and conflict with the proxy. That job is what browser-personas does now:`);
           console.log(`             re-run with --replace-launcher to use the bundled chrome-devtools-mcp instead.`);
         }
-        anything ||= report.changed.length + report.created.length + report.replaced.length > 0;
+        anything ||= report.changed.length + report.created.length + report.replaced.length + report.removed.length > 0;
       }
       const upstream = resolveUpstream([]);
       console.log(`upstream:    chrome-devtools-mcp (${upstream.source === "bundled" ? "bundled with browser-personas" : "npx @latest"}) — your own entry's command wins if it had one`);

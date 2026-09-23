@@ -137,6 +137,30 @@ describe("a fresh install", () => {
   });
 });
 
+describe("collapsing the per-persona entries", () => {
+  it("removes the chrome-devtools-<name> entries it made, keeps pinned ones and the user's own", () => {
+    const f = join(tmp(), ".claude.json");
+    const shimmed = (p: string) => ({ command: "/usr/bin/node", args: ["/opt/bp/dist/cli.js", "exec", "--persona", p] });
+    writeFileSync(f, JSON.stringify({
+      mcpServers: {
+        "chrome-devtools": shimmed("default"),
+        "chrome-devtools-jlo": shimmed("jlo"),
+        "chrome-devtools-katy": shimmed("katy"),
+        // Somebody's own server that happens to share the prefix.
+        "chrome-devtools-canary": { command: "npx", args: ["-y", "chrome-devtools-mcp@latest", "--channel", "canary"] },
+      },
+    }));
+
+    const report = rewriteHostFile(f, { launcher, persona: "default", personas: ["katy"], collapse: true });
+
+    expect(report.removed).toEqual(["chrome-devtools-jlo"]);
+    const names = Object.keys(servers(f)).sort();
+    expect(names).toEqual(["chrome-devtools", "chrome-devtools-canary", "chrome-devtools-katy"]);
+    // The user's own entry was wrapped like any other upstream command, not deleted.
+    expect(isThroughShim(servers(f)["chrome-devtools-canary"] as never)).toBe(true);
+  });
+});
+
 describe("personas and the registry", () => {
   it("adds a chrome-devtools-<name> entry per persona, seeded from the user's base command", () => {
     const f = join(tmp(), ".claude.json");

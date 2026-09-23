@@ -51,6 +51,12 @@ export type RewriteOptions = {
   create?: boolean;
   /** Swap a custom launcher for the bundled upstream instead of wrapping it. */
   replaceLaunchers?: boolean;
+  /**
+   * Remove `chrome-devtools-<name>` entries this tool created earlier, unless they are
+   * named in `personas`. One entry per persona cost a Node process and 29 tools per
+   * identity in every session; `use_persona` replaced it.
+   */
+  collapse?: boolean;
 };
 
 export type RewriteReport = {
@@ -60,6 +66,7 @@ export type RewriteReport = {
   /** Entries whose command is a custom launcher the shim cannot see inside. */
   warned: string[];
   replaced: string[];
+  removed: string[];
 };
 
 /**
@@ -103,6 +110,21 @@ function userCommandOf(entry: Entry): Entry {
 
 function rewriteServers(servers: JsonObject, options: RewriteOptions, report: RewriteReport, scope: string): void {
   let baseEntry = servers["chrome-devtools"] as Entry | undefined;
+
+  // Before anything is wrapped: "did this tool make it" is read off the shim, and a user's
+  // own entry wrapped a moment earlier would look exactly like one of ours and be deleted.
+  if (options.collapse && scope === "") {
+    const pinned = new Set((options.personas ?? []).map((p) => `chrome-devtools-${p}`));
+    for (const [name, raw] of Object.entries(servers)) {
+      if (!/^chrome-devtools-.+/.test(name) || pinned.has(name)) continue;
+      // Only entries this tool made: a user's own chrome-devtools-foo is theirs.
+      if (typeof raw === "object" && raw !== null && isThroughShim(raw as Entry)) {
+        delete servers[name];
+        report.removed.push(name);
+      }
+    }
+  }
+
 
   for (const [name, raw] of Object.entries(servers)) {
     if (!/chrome-devtools/.test(name) || typeof raw !== "object" || raw === null) continue;
@@ -153,7 +175,7 @@ function rewriteServers(servers: JsonObject, options: RewriteOptions, report: Re
 }
 
 export function rewriteHostFile(file: string, options: RewriteOptions): RewriteReport {
-  const report: RewriteReport = { changed: [], created: [], skipped: [], warned: [], replaced: [] };
+  const report: RewriteReport = { changed: [], created: [], skipped: [], warned: [], replaced: [], removed: [] };
   let parsed: JsonObject = {};
   if (existsSync(file)) {
     try {
@@ -174,7 +196,9 @@ export function rewriteHostFile(file: string, options: RewriteOptions): RewriteR
     }
   }
 
-  if (report.changed.length + report.created.length + report.replaced.length === 0) return report;
+  if (report.changed.length + report.created.length + report.replaced.length + report.removed.length === 0) {
+    return report;
+  }
   if (existsSync(file) && !existsSync(backupPath(file))) copyFileSync(file, backupPath(file));
   writeFileSync(file, `${JSON.stringify(parsed, null, 2)}\n`);
   return report;

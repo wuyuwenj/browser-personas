@@ -43,6 +43,10 @@ export type ApiDeps = {
   /** Stop the watcher saving this login by itself. */
   holdLogin: (persona: string) => boolean;
   verifyPersona: (persona: string) => Promise<{ status: number | null; url: string | null; signedIn: boolean }>;
+  usePersona: (
+    owner: string,
+    persona: string,
+  ) => Promise<{ ok: true; persona: string; previous: string; sharedWith: string[] } | { ok: false; reason: string }>;
   reloadPersona: (persona: string) => void;
 };
 
@@ -118,6 +122,12 @@ export async function handleApi(
     }
     deps.reloadPersona(name);
     return ok({ name, created: true });
+  }
+
+  const ownerMatch = /^\/api\/owners\/([^/]+)\/persona$/.exec(path);
+  if (ownerMatch && method === "POST") {
+    const result = await deps.usePersona(decodeURIComponent(ownerMatch[1]!), String(body["persona"] ?? ""));
+    return result.ok ? ok(result) : bad(409, result.reason);
   }
 
   const personaMatch = /^\/api\/personas\/([^/]+)(\/.*)?$/.exec(path);

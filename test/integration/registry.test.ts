@@ -30,11 +30,11 @@ describe("the persona registry, through MCP", () => {
     return browser;
   };
 
-  it("offers exactly the five persona tools and nothing of upstream's", async () => {
+  it("offers exactly the six persona tools and nothing of upstream's", async () => {
     harness = await startPersonaHarness([{ name: "katy", env: "staging", accounts: [{ origin: DOORVEST }] }]);
     const tools = (await (await registry()).request("tools/list", {})) as { tools: { name: string }[] };
     const names = tools.tools.map((t) => t.name).sort();
-    expect(names).toEqual(["add_persona", "list_personas", "note_persona", "remove_persona", "verify_persona"]);
+    expect(names).toEqual(["add_persona", "list_personas", "note_persona", "remove_persona", "use_persona", "verify_persona"]);
   }, 90_000);
 
   it("describes each persona, its scope, and who is holding it", async () => {
@@ -55,7 +55,7 @@ describe("the persona registry, through MCP", () => {
     expect(listing).toContain("staging");
     expect(listing).toContain(DOORVEST);
     expect(listing).toContain("agent-1");
-    expect(listing).toContain("chrome-devtools-katy");
+    expect(listing).toContain('use_persona("katy")');
   }, 90_000);
 
   it("tells an agent when a persona is shared, and says what that means", async () => {
