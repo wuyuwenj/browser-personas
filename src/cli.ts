@@ -167,14 +167,17 @@ async function main(): Promise<number> {
       const lock = new DaemonLock(join(runtimeDir(dir), "daemon.lock"));
       if (!lock.acquire(port)) {
         const info = lock.read();
-        // Loud, and on both streams. A refusal that only goes to a log file lets an old
-        // daemon keep serving an old build while a restart looks like it worked.
+        // Loud, and it names the fix. A quiet refusal lets an old daemon keep serving an
+        // old build while a restart looks like it worked.
         const message =
           `browser-personas is ALREADY RUNNING (pid ${info?.pid ?? "?"}, port ${info?.port ?? "?"}).\n` +
           `Nothing was started, and that daemon may be running an older build.\n` +
-          `Stop it first:  browser-personas stop${dir ? ` --config-dir ${dir}` : ""}`;
+          `Stop it first:  browser-personas stop${dir ? ` --config-dir ${dir}` : ""}\n` +
+          `If stop hangs (builds before 0.10.1 could), force it:  kill -9 ${info?.pid ?? "<pid>"}`;
+        // Once. It used to go to both streams so a log capturing only stdout would see it,
+        // but a terminal shows both and printed it twice; the non-zero exit is the signal
+        // a script should read.
         console.error(message);
-        console.log(message);
         return 1;
       }
       mkdirSync(chromeProfileDir(dir), { recursive: true });
