@@ -359,19 +359,30 @@ export class BrowserPersonasDaemon {
 
   async stop(): Promise<void> {
     if (this.#sweep) clearInterval(this.#sweep);
+    // Bounded, step by step. Saving the jars matters most, so it goes first, but nothing
+    // here may hold the process hostage: a client that never answers a close frame, a
+    // browser that never answers a CDP call, a console tab keeping a connection alive.
+    const within = <T>(ms: number, work: Promise<T>): Promise<T | undefined> =>
+      Promise.race([work, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref?.())]);
+
     if (this.#loginWatch) clearInterval(this.#loginWatch);
     this.#loginWatch = null;
-    for (const session of this.#logins.values()) await session.close().catch(() => undefined);
+    for (const session of this.#logins.values()) await within(5_000, session.close().catch(() => undefined));
     this.#logins.clear();
-    await this.#personas.persistAll().catch(() => undefined);
+    await within(20_000, this.#personas.persistAll().catch(() => undefined));
+
     for (const client of this.#clients.values()) client.ws.close(1001, "daemon stopping");
+    await within(1_000, Promise.resolve());
+    for (const client of this.#clients.values()) client.ws.terminate();
     this.#clients.clear();
-    await new Promise<void>((resolve) => this.#wss.close(() => resolve()));
-    await new Promise<void>((resolve) => this.#http.close(() => resolve()));
+    await within(2_000, new Promise<void>((resolve) => this.#wss.close(() => resolve())));
+    this.#http.closeAllConnections?.();
+    await within(2_000, new Promise<void>((resolve) => this.#http.close(() => resolve())));
     this.#chrome?.kill();
-    await this.#chrome?.exited();
+    await within(5_000, this.#chrome?.exited() ?? Promise.resolve());
     this.#started = false;
   }
+
 
   // ---- upstream -----------------------------------------------------------
 
@@ -385,10 +396,22 @@ export class BrowserPersonasDaemon {
     method: string,
     params: Record<string, unknown> = {},
     sessionId?: string,
+    timeoutMs = 15_000,
   ): Promise<Record<string, unknown>> {
-    return new Promise((resolve) => {
+    // Every proxy-originated call has a deadline. Without one, a Chrome that stops
+    // answering — a headed window mid-dialog, a crashed renderer — leaves the caller
+    // waiting forever, and `stop` was one of those callers: the daemon could not exit.
+    return new Promise((resolve, reject) => {
       const id = this.#nextUpstreamId++;
-      this.#internal.set(id, resolve);
+      const timer = setTimeout(() => {
+        this.#internal.delete(id);
+        reject(new Error(`${method} got no answer from Chrome within ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      this.#internal.set(id, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
       const frame: Record<string, unknown> = { id, method, params };
       if (sessionId) frame["sessionId"] = sessionId;
       this.#transport?.send(frame);
