@@ -507,6 +507,9 @@ export class BrowserPersonasDaemon {
     }
   }
 
+  /** Per-persona chain of jar reloads, so creates keep their order across the await. */
+  #jarSync = new Map<string, Promise<void>>();
+
   #startCreate(ownerId: OwnerId, send: () => void): void {
     const begin = (): void => {
       this.#creatingOwner = ownerId;
@@ -898,11 +901,22 @@ export class BrowserPersonasDaemon {
       // Every tab an agent opens lands in its persona's context, so the cookies it sees
       // are that persona's and nobody else's.
       // The owner's CURRENT persona: `use_persona` may have changed it since connect.
-      const contextId = this.#personas.context(this.#personaOf(client.ownerId) ?? client.persona)?.browserContextId;
+      const personaName = this.#personaOf(client.ownerId) ?? client.persona;
+      const contextId = this.#personas.context(personaName)?.browserContextId;
       if (contextId) {
         out["params"] = { ...(out["params"] as Record<string, unknown>), browserContextId: contextId };
       }
-      this.#startCreate(client.ownerId, () => this.#transport?.send(out));
+      // A login saved since this context last looked goes in before the tab opens, so the
+      // agent's very next page carries it — no restart, no reconnect. It runs BEFORE the
+      // create is claimed, not inside it: replaying storage opens throwaway tabs, and inside
+      // the claim window those would be credited to this agent. Chained per persona so two
+      // quick creates still reach Chrome in the order they were sent.
+      const synced = (this.#jarSync.get(personaName) ?? Promise.resolve())
+        .then(() => this.#personas.syncJar(personaName))
+        .catch(() => false)
+        .then(() => undefined);
+      this.#jarSync.set(personaName, synced);
+      void synced.then(() => this.#startCreate(client.ownerId, () => this.#transport?.send(out)));
       return;
     }
     this.#transport?.send(out);

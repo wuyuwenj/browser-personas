@@ -225,7 +225,7 @@ async function main(): Promise<number> {
       });
       // The count, never the contents.
       console.log(`saved ${result.cookies} cookies for "${name}"${result.identity ? ` (${result.identity})` : ""}`);
-      console.log("restart the daemon, or reconnect, to pick it up");
+      console.log("a running daemon picks it up on the next tab it opens");
       return 0;
     }
 

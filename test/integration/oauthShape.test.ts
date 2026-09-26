@@ -96,6 +96,9 @@ describe("a login that keeps its token in web storage", () => {
       cookies: [],
       storage: { [`http://127.0.0.1:${appPort}`]: { local: {}, session: {} } },
     });
+    // A jar written behind the daemon's back is a login it must load, not overwrite
+    // (jarReload.test.ts) — so the seed is loaded first, as the next tab would.
+    await daemon.personas.syncJar("oauthy");
     await daemon.personas.persist("oauthy");
 
     const jar = readJar(jarPath(join(root, "personas"), "oauthy"), vaultKey(root));
