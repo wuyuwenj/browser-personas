@@ -258,6 +258,8 @@ describe("saving a login by itself", () => {
         if (method === "Target.getTargetInfo") return { targetInfo: { url: DOORVEST + "/dashboard" } };
         if (method === "Runtime.evaluate") {
           const expr = String(params["expression"] ?? "");
+          // The app has finished loading; these tests are about the probe's answer.
+          if (expr.includes("getEntriesByType")) return { result: { value: { ready: true, ok: 1, denied: 0, quietMs: 5_000 } } };
           if (expr.includes("querySelectorAll")) return { result: { value: null } };
           if (expr.includes("fetch(")) return { result: { value: answers[Math.min(at++, answers.length - 1)] } };
         }

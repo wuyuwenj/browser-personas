@@ -112,7 +112,10 @@ describe("the login session across an SSO round trip", () => {
   const APP = "https://app.example.com";
   const IDP = "https://accounts.google.com";
 
-  type Step = { url: string; targetId?: string; typed?: string };
+  type Load = { ready: boolean; ok: number; denied: number; quietMs: number };
+  // A page the app has finished loading, with its API answering: the default.
+  const LOADED: Load = { ready: true, ok: 1, denied: 0, quietMs: 5_000 };
+  type Step = { url: string; targetId?: string; typed?: string; load?: Load };
 
   async function scripted(steps: Step[], probe?: string) {
     const { LoginSession } = await import("../../src/personas/loginSession.js");
@@ -137,6 +140,7 @@ describe("the login session across an SSO round trip", () => {
         if (method === "Storage.getCookies") return { cookies: [] };
         if (method === "Runtime.evaluate") {
           const expr = String(params["expression"] ?? "");
+          if (expr.includes("getEntriesByType")) return { result: { value: step.load ?? LOADED } };
           if (expr.includes("querySelectorAll")) return { result: { value: step.typed ?? null } };
           if (expr.includes("fetch(")) return { result: { value: step.url.startsWith(APP) && step.url.includes("/dashboard") ? 200 : 401 } };
           return { result: { value: { local: {}, session: {} } } };
@@ -211,6 +215,71 @@ describe("the login session across an SSO round trip", () => {
       await session.finish();
       const { loadManifest } = await import("../../src/personas/manifest.js");
       expect(loadManifest(harness.personasDir, "katy")?.accounts?.[0]?.probe).toBe("/dashboard");
+    } finally {
+      await session.close();
+    }
+  }, 90_000);
+
+  it("waits for the app to finish loading before it saves", async () => {
+    // RentVine, 9/25: back on the app after two-factor, the URL looked signed in for two
+    // checks while the app was still making the calls that set its final token. The jar
+    // was captured then, and every later visit bounced to sign-in.
+    // Each not-yet-loaded state fails exactly one condition, twice in a row, so each
+    // condition alone is what stops the save.
+    const documentLoading: Load = { ready: false, ok: 1, denied: 0, quietMs: 5_000 };
+    const callsInFlight: Load = { ready: true, ok: 1, denied: 0, quietMs: 200 };
+    const { session, next } = await scripted([
+      { url: `${APP}/admin` },
+      { url: `${IDP}/v3/signin/identifier`, typed: "katy@example.com" },
+      { url: `${APP}/dashboard`, load: documentLoading },
+      { url: `${APP}/dashboard`, load: documentLoading },
+      { url: `${APP}/dashboard`, load: callsInFlight },
+      { url: `${APP}/dashboard`, load: callsInFlight },
+      { url: `${APP}/dashboard` },
+      { url: `${APP}/dashboard` },
+    ]);
+    try {
+      for (let i = 0; i < 6; i++) {
+        await next();
+        expect(session.settled, `saved at step ${i + 1}, before the app had loaded`).toBe(false);
+      }
+      await next();
+      await next();
+      expect(session.settled).toBe(true);
+    } finally {
+      await session.close();
+    }
+  }, 90_000);
+
+  it("never saves while the app is rejecting the session", async () => {
+    // The app's own API answered 401: it is about to send the human back to sign in.
+    const rejected: Load = { ready: true, ok: 1, denied: 1, quietMs: 5_000 };
+    const { session, next } = await scripted([
+      { url: `${APP}/admin` },
+      { url: `${IDP}/v3/signin/identifier`, typed: "katy@example.com" },
+      ...Array.from({ length: 6 }, () => ({ url: `${APP}/dashboard`, load: rejected })),
+    ]);
+    try {
+      for (let i = 0; i < 8; i++) await next();
+      expect(session.settled, "saved a session the app answered 401 to").toBe(false);
+    } finally {
+      await session.close();
+    }
+  }, 90_000);
+
+  it("holds a page with no API calls for longer before trusting it", async () => {
+    const silent: Load = { ready: true, ok: 0, denied: 0, quietMs: 5_000 };
+    const { session, next } = await scripted([
+      { url: `${APP}/admin` },
+      { url: `${IDP}/v3/signin/identifier`, typed: "katy@example.com" },
+      ...Array.from({ length: 4 }, () => ({ url: `${APP}/dashboard`, load: silent })),
+    ]);
+    try {
+      for (let i = 0; i < 4; i++) await next();
+      expect(session.settled, "trusted a silent page after two checks").toBe(false);
+      await next();
+      await next();
+      expect(session.settled).toBe(true);
     } finally {
       await session.close();
     }

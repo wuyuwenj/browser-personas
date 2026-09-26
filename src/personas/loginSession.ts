@@ -61,6 +61,29 @@ export type LoginSessionOptions = {
   client?: { cdp: CdpClient; kill: () => void; exited: () => Promise<void> };
 };
 
+export type AppLoad = {
+  /** The document itself has finished loading. */
+  ready: boolean;
+  /** Same-origin API calls that answered 2xx. */
+  ok: number;
+  /** Same-origin API calls that answered 401/403: the app is rejecting this session. */
+  denied: number;
+  /** Time since the last network response of any kind. */
+  quietMs: number;
+};
+
+/** How long the network must be silent before the app counts as done loading. */
+export const QUIET_MS = 1_500;
+
+/**
+ * Loaded into the site: the document is complete, the network has gone quiet, and the app
+ * has not rejected the session. A rejected call means the app is about to send the human
+ * back to sign in, which is exactly what a URL check alone cannot see.
+ */
+export function appLoaded(load: AppLoad): boolean {
+  return load.ready && load.denied === 0 && load.quietMs >= QUIET_MS;
+}
+
 function safePath(url: string): string | undefined {
   try {
     const path = new URL(url).pathname;
@@ -106,6 +129,7 @@ export class LoginSession {
    * "signed in" from "part way through signing in".
    */
   #stable = 0;
+  #confirmedByApp = false;
   #autoFinish = true;
   #finishing: Promise<number> | null = null;
 
@@ -193,8 +217,20 @@ export class LoginSession {
       } else {
         signedIn = this.#looksSignedInWithoutProbe(currentUrl);
       }
+      // Even a signed-in URL is not a finished login until the app has actually loaded on
+      // it. The last hop of a sign-in is often the app's own first API calls, and those are
+      // what set the final session cookie — capture before them and the jar holds a token
+      // the app rejects on the next visit.
+      let load: AppLoad | null = null;
+      if (signedIn) {
+        load = await this.#readAppLoad();
+        signedIn = load !== null && appLoaded(load);
+      }
       if (signedIn) this.#landedAt = currentUrl;
       this.#stable = signedIn ? this.#stable + 1 : 0;
+      // With no probe, a page whose own API has answered 2xx is strong evidence; a page
+      // that has made no API call at all is only a quiet page, so it must hold for longer.
+      this.#confirmedByApp = Boolean(probe) || (load?.ok ?? 0) > 0;
     }
 
     return {
@@ -286,7 +322,8 @@ export class LoginSession {
   }
 
   get settled(): boolean {
-    return !this.#finished && this.#autoFinish && this.#stable >= LoginSession.STABLE_CHECKS;
+    const needed = this.#confirmedByApp ? LoginSession.STABLE_CHECKS : LoginSession.UNCONFIRMED_STABLE_CHECKS;
+    return !this.#finished && this.#autoFinish && this.#stable >= needed;
   }
 
   /**
@@ -298,6 +335,52 @@ export class LoginSession {
    * from "part way through signing in".
    */
   static readonly STABLE_CHECKS = 2;
+
+  /** For a page that has loaded but whose own API has not yet answered 2xx. */
+  static readonly UNCONFIRMED_STABLE_CHECKS = 4;
+
+  /**
+   * How far the app on the current page has got, read from the page's own resource
+   * timing, so no request has to be sent and nothing has to have been listening from the
+   * start. responseStatus is reported for same-origin entries only, which are exactly the
+   * app's own calls.
+   */
+  async #readAppLoad(): Promise<AppLoad | null> {
+    if (!this.#pageSession) return null;
+    try {
+      const result = await this.#cdp.send(
+        "Runtime.evaluate",
+        {
+          expression: `(() => {
+            const calls = performance.getEntriesByType("resource")
+              .filter(e => (e.initiatorType === "fetch" || e.initiatorType === "xmlhttprequest")
+                && new URL(e.name).origin === location.origin);
+            const ends = performance.getEntriesByType("resource").map(e => e.responseEnd);
+            const last = ends.length ? Math.max(...ends) : 0;
+            return {
+              ready: document.readyState === "complete",
+              ok: calls.filter(e => e.responseStatus >= 200 && e.responseStatus < 300).length,
+              denied: calls.filter(e => e.responseStatus === 401 || e.responseStatus === 403).length,
+              quietMs: Math.round(performance.now() - last),
+            };
+          })()`,
+          returnByValue: true,
+        },
+        this.#pageSession,
+        8_000,
+      );
+      const value = (result["result"] as { value?: unknown } | undefined)?.value as Partial<AppLoad> | undefined;
+      if (!value || typeof value !== "object") return null;
+      return {
+        ready: value.ready === true,
+        ok: Number(value.ok) || 0,
+        denied: Number(value.denied) || 0,
+        quietMs: Number(value.quietMs) || 0,
+      };
+    } catch {
+      return null;
+    }
+  }
 
   /** The value sitting in whatever passes for a username field on this page. */
   async #readIdentifier(): Promise<string | null> {
