@@ -221,8 +221,13 @@ export class LoginSession {
       // it. The last hop of a sign-in is often the app's own first API calls, and those are
       // what set the final session cookie — capture before them and the jar holds a token
       // the app rejects on the next visit.
+      //
+      // Only without a probe. A probe answering 2xx IS the app accepting this session, a
+      // stronger signal than any page heuristic — and the probe's own fetch, sent from this
+      // page a moment earlier, would keep the network from ever looking quiet (demopm6,
+      // 9/25: dashboard loaded, API 200, window never closed).
       let load: AppLoad | null = null;
-      if (signedIn) {
+      if (signedIn && !probe) {
         load = await this.#readAppLoad();
         signedIn = load !== null && appLoaded(load);
       }
@@ -342,8 +347,8 @@ export class LoginSession {
   /**
    * How far the app on the current page has got, read from the page's own resource
    * timing, so no request has to be sent and nothing has to have been listening from the
-   * start. responseStatus is reported for same-origin entries only, which are exactly the
-   * app's own calls.
+   * start. Same-origin entries only: responseStatus is reported for those alone, and they
+   * are exactly the app's own calls.
    */
   async #readAppLoad(): Promise<AppLoad | null> {
     if (!this.#pageSession) return null;
@@ -352,10 +357,12 @@ export class LoginSession {
         "Runtime.evaluate",
         {
           expression: `(() => {
-            const calls = performance.getEntriesByType("resource")
-              .filter(e => (e.initiatorType === "fetch" || e.initiatorType === "xmlhttprequest")
-                && new URL(e.name).origin === location.origin);
-            const ends = performance.getEntriesByType("resource").map(e => e.responseEnd);
+            // The app's own traffic only: analytics and chat widgets on other origins poll
+            // forever, and a page that has to wait for them never counts as loaded.
+            const own = performance.getEntriesByType("resource")
+              .filter(e => new URL(e.name).origin === location.origin);
+            const calls = own.filter(e => e.initiatorType === "fetch" || e.initiatorType === "xmlhttprequest");
+            const ends = own.map(e => e.responseEnd);
             const last = ends.length ? Math.max(...ends) : 0;
             return {
               ready: document.readyState === "complete",
